@@ -403,40 +403,66 @@ def count_params(model):
 
 def getPath(data, flag):
     
-    
-    if data=='darcy':
-        if flag=='train':
-            PATH = os.path.join(os.path.abspath(''),'data/piececonst_r421_N1024_smooth1.mat')
-        else:
-            PATH = os.path.join(os.path.abspath(''), 'data/piececonst_r421_N1024_smooth2.mat')
+    if data=='ns_merge':
+        if flag=='xtrain':
+            PATH = '/ibex/ai/home/liux0t/ns_merge/x_train_dataset.pt'
+        elif flag=='ytrain':
+            PATH = '/ibex/ai/home/liux0t/ns_merge/y_train_dataset.pt'
+        elif flag=='xtest':
+            PATH = '/ibex/ai/home/liux0t/ns_merge/x_test_dataset.pt'
+        elif flag=='ytest':
+            PATH = '/ibex/ai/home/liux0t/ns_merge/y_test_dataset.pt'
 
+    elif data=='darcy':
+        if flag=='train':
+            PATH = os.path.join('/ibex/ai/home/liux0t/Xinliang/FMM/','data/piececonst_r421_N1024_smooth1.mat')
+        else:
+            PATH = os.path.join('/ibex/ai/home/liux0t/Xinliang/FMM/', 'data/piececonst_r421_N1024_smooth2.mat')
+    elif data=='darcy20':
+        # for ray tune
+        TRAIN_PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau5_512_train.mat'
+        TEST_PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau5_512_test.mat'
+    elif data == 'darcy_contin':
+        if flag == 'train':
+            PATH = '/home/liux0t/FMM/experiments/darcy_contin_1_5_alpha2.2.mat'
+        elif flag == 'test':
+            PATH = '/home/liux0t/FMM/experiments/darcy_contin_1_5_alpha2.1.mat'
+        elif flag == 'jin':
+            PATH = '/home/liux0t/FMM/experiments/test.mat'
+        else:
+            PATH = '/home/liux0t/FMM/experiments/darcy_contin_1_5_sin.mat'
+        
     elif data=='darcy20c6':
         # for ray tune
         if flag=='train':
-            PATH = '/ibex/ai/home/liux0t/FMM/darcy_alpha2_tau5_512_train.mat' 
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau5_512_train.mat' 
         elif flag=='test':
-            PATH = '/ibex/ai/home/liux0t/FMM/darcy_alpha2_tau5_512_test.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau5_512_test.mat'
         elif flag=='val':
-            PATH = '/ibex/ai/home/liux0t/FMM/darcy_alpha2_tau5_512_train.mat' 
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau5_512_train.mat' 
         elif flag=='gel':
-            PATH = '/ibex/ai/home/liux0t/ FMM/darcy_alpha2_tau18_c3_512_test.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau18_c3_512_test.mat'
         else: raise NameError('invalid flag name')
         
     elif data=='darcy20c6_c3':
         TRAIN_PATH = os.path.join(os.path.abspath(''), 'darcy_alpha2_tau5_512_train.mat')
-        TEST_PATH = '/ibex/ai/home/liux0t/ FMM/darcy_alpha2_tau18_c3_512_test.mat'
+        TEST_PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/darcy_alpha2_tau18_c3_512_test.mat'
     elif data=='darcy15c10':
         TRAIN_PATH = os.path.join(os.path.abspath(''), 'darcy_alpha2_tau15_c10_512_train.mat')
         TEST_PATH = os.path.join(os.path.abspath(''), 'darcy_alpha2_tau15_c10_512_test.mat')
     elif data=='a3f2':
         TRAIN_PATH = os.path.join(os.path.abspath(''), 'data/mul_res1023_a3f2_train.mat')
         TEST_PATH = os.path.join(os.path.abspath(''), 'data/mul_res1023_a3f2_test.mat')
-    
+    elif data=='a4f3':
+        if flag=='train':
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/mul_res1023_a4f3_train.mat'
+        else:
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/mul_res1023_a4f3_test.mat'
     elif data=='a4f1':
         if flag=='train':
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/mul_tri_train.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/mul_tri_train.mat'
         else:
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/mul_tri_test.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/mul_tri_test.mat'
     elif data=='checker':
         TRAIN_PATH = '/home/xubo/multiscale-attention/data/mul_res1023_a7f1m32_train.mat'
         TEST_PATH = '/home/xubo/multiscale-attention/data/mul_res1023_a7f1m32_test.mat'
@@ -445,9 +471,9 @@ def getPath(data, flag):
         TEST_PATH = '/home/xubo/multiscale-attention/data/mul_res1023_a7f1m4_test.mat'
     elif data=='darcyF':
         if flag in ['train', 'val']:
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/darcy_alpha2_tau9_512_F_train.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/darcy_alpha2_tau9_512_F_train.mat'
         else:
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/darcy_alpha2_tau9_512_F_test.mat'   
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/darcy_alpha2_tau9_512_F_test.mat'   
     elif data=='darcyF2':
         TRAIN_PATH = os.path.join(os.path.abspath(''), 'darcy_alpha2_tau9_512_F_train.mat')
         TEST_PATH = os.path.join(os.path.abspath(''), 'darcy_alpha2_tau9_512_F_test.mat')    
@@ -458,18 +484,18 @@ def getPath(data, flag):
         TEST_PATH = '/home/liux0t/FMM/data/ns_V1e-4_N10000_T30.mat'
     elif data=='helmholtz':
         if flag=='train':
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/Hel_train.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/Hel_train.mat'
         else:
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/Hel_test.mat'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/Hel_test.mat'
     elif data=='helm':
         if flag=='x':
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/Helmholtz_inputs.npy'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/Helmholtz_inputs.npy'
         else:
-            PATH = '/ibex/ai/home/liux0t/ FMM/data/Helmholtz_outputs.npy'
+            PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/Helmholtz_outputs.npy'
     elif data=='1e-5':
-        PATH = '/ibex/ai/home/liux0t/ FMM/data/NavierStokes_V1e-5_N1200_T20.mat'
+        PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/NavierStokes_V1e-5_N1200_T20.mat'
     elif data=='1e-4':
-        PATH = '/ibex/ai/home/liux0t/ FMM/data/ns_V1e-4_N10000_T30.mat'
+        PATH = '/ibex/ai/home/liux0t/Xinliang/FMM/data/ns_V1e-4_N10000_T30.mat'
 
     else: raise NameError('invalid data name')
     
@@ -492,9 +518,45 @@ def getDataSize(dataOpt):
         dataOpt['dataSize'] = {'train': range(1000), 'test': range(200), 'val':range(200, 400)}
     elif dataOpt['data'] == 'airfoil':
         dataOpt['dataSize'] = {'train': range(1000), 'test': range(200), 'val':range(200, 400)}
+    elif dataOpt['data'] == 'ns_merge':
+        dataOpt['dataSize'] = {'train': range(50000), 'test': range(50000, 50000+1000)}
     else:
         raise NameError('dataset not exist')
     return dataOpt
+
+def getNS_merge_Dataset(dataOpt, return_normalizer=True, normalizer_type='GN'):
+    PATH_X = getPath(dataOpt['data'], 'xtrain')
+    PATH_Y = getPath(dataOpt['data'], 'ytrain')
+    x = torch.load(PATH_X)
+    y = torch.load(PATH_Y)
+    GN = dataOpt['GN']
+    if 'normalizer_type' in dataOpt:
+        normalizer_type = dataOpt['normalizer_type']
+    
+
+    train_idx = dataOpt['dataSize']['train']
+    test_idx = dataOpt['dataSize']['test']
+
+    x_train = x[train_idx,...]
+    x_test = x[test_idx,...]
+    y_train = y[train_idx,...]
+    y_test = y[test_idx,...]
+
+
+    if return_normalizer:
+        if normalizer_type=='PGN':
+            x_normalizer = UnitGaussianNormalizer(x_train)
+            y_normalizer = UnitGaussianNormalizer(y_train)
+        else:
+            x_normalizer = GaussianNormalizer(x_train)
+            y_normalizer = GaussianNormalizer(y_train)
+        if GN:        
+            x_train = x_normalizer.encode(x_train)
+            x_test = x_normalizer.encode(x_test)
+    
+        return x_train, y_train, x_test, y_test,  x_normalizer, y_normalizer
+
+    return x_train, y_train, x_test, y_test
 
 def getDarcyDataSet(dataOpt, flag, 
 return_normalizer=False, normalizer_type='PGN', normalizer=None):
@@ -576,9 +638,9 @@ def getHelmDataset(dataOpt, return_normalizer=True, normalizer_type='PGN'):
     return x_train, y_train, x_test, y_test
 
 def getPipeDataset(dataOpt):
-    INPUT_X = '/ibex/ai/home/liux0t/ FMM/Pipe_X.npy'
-    INPUT_Y = '/ibex/ai/home/liux0t/ FMM/Pipe_Y.npy'
-    OUTPUT_Sigma = '/ibex/ai/home/liux0t/ FMM/Pipe_Q.npy'
+    INPUT_X = '/ibex/ai/home/liux0t/Xinliang/FMM/Pipe_X.npy'
+    INPUT_Y = '/ibex/ai/home/liux0t/Xinliang/FMM/Pipe_Y.npy'
+    OUTPUT_Sigma = '/ibex/ai/home/liux0t/Xinliang/FMM/Pipe_Q.npy'
 
     ntrain = 1000
     ntest = 200
@@ -750,7 +812,7 @@ def getOptimizerScheduler(parameters, epochs, optimizer_type='adam', lr=0.001,
     elif optimizer_type == 'adagrad':
         optimizer =  torch.optim.Adagrad(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adam':
-        optimizer =  Adam(parameters, lr=lr, weight_decay=weight_decay)
+        optimizer =  torch.optim.Adam(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adamax':
         optimizer =  torch.optim.Adamax(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adamw':

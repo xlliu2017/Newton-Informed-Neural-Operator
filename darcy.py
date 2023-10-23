@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import MgNO_DC, MgNO_DC_smooth
+from models import MgNO_DC, MgNO_DC_smooth, MgNO_NS, MgNO_helm, MgNO_DC_2, MgNO_DC_3, MgNO_DC_4
+from get_Unet_new import get_model
 import os, logging
 import numpy as np
 import matplotlib.pyplot as plt
@@ -47,16 +48,21 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     # load data and data normalization
     ################################################################
    
-    if dataOpt['data'] in {'darcy', 'darcy20c6', 'darcy15c10', 'darcyF', 'darcy_contin', 'a4f1'}:
+    if dataOpt['data'] in {'darcy', 'darcy20c6', 'darcy15c10', 'darcyF', 'darcy_contin', 'a4f1', }:
         
         x_train, y_train, x_normalizer, y_normalizer = getDarcyDataSet(dataOpt, flag='train', return_normalizer=True)
         x_test, y_test = getDarcyDataSet(dataOpt, flag='test', return_normalizer=False, normalizer=x_normalizer)
-        x_val, y_val = getDarcyDataSet(dataOpt, flag='val', return_normalizer=False, normalizer=x_normalizer)
+        if validate:
+            x_val, y_val = getDarcyDataSet(dataOpt, flag='val', return_normalizer=False, normalizer=x_normalizer)
         
     elif dataOpt['data'] == 'helm':
         x_train, y_train, x_test, y_test, x_val, y_val, x_normalizer, y_normalizer = getHelmDataset(dataOpt)
     elif dataOpt['data'] == 'pipe':
         x_train, y_train, x_test, y_test, x_val, y_val = getPipeDataset(dataOpt)
+    elif dataOpt['data'] == 'ns_merge':
+        x_train, y_train, x_test, y_test, x_normalizer, y_normalizer = getNS_merge_Dataset(dataOpt)
+        y_train = y_train[:, 0, ...]
+        y_test = y_test[:, 0, ...]
     else: 
         raise NameError('dataset not exist')
 
@@ -66,11 +72,15 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     if x_train.ndim == 3:
         x_train = x_train[:, np.newaxis, ...]
         x_test = x_test[:, np.newaxis, ...]
-        x_val = x_val[:, np.newaxis, ...]
-
-    train_loader = DataLoader(TensorDataset(x_train.contiguous().to(device), y_train.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=True)
-    test_loader = DataLoader(TensorDataset(x_test.contiguous().to(device), y_test.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=False)
-    val_loader = DataLoader(TensorDataset(x_val.contiguous().to(device), y_val.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=False)
+        if validate:
+            x_val = x_val[:, np.newaxis, ...]
+    train_loader = DataLoader(TensorDataset(x_train.contiguous(), y_train.contiguous()), batch_size=dataOpt['batch_size'], shuffle=True)
+    test_loader = DataLoader(TensorDataset(x_test.contiguous(), y_test.contiguous()), batch_size=dataOpt['batch_size'], shuffle=False)
+    
+    # train_loader = DataLoader(TensorDataset(x_train.contiguous().to(device), y_train.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=True)
+    # test_loader = DataLoader(TensorDataset(x_test.contiguous().to(device), y_test.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=False)
+    if validate:
+        val_loader = DataLoader(TensorDataset(x_val.contiguous().to(device), y_val.contiguous().to(device)), batch_size=dataOpt['batch_size'], shuffle=False)
 
     ################################################################
     # training and evaluation
@@ -81,12 +91,23 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         model = MgNO_DC_smooth(**modelOpt).to(device)
     elif dataOpt['data'] == 'pipe':
         model = MgNO_DC(**modelOpt).to(device)
-
+    else:
+        if model_type == 'MgNO_helm':
+            model = MgNO_helm(**modelOpt).to(device)
+        elif model_type == 'MgNO_DC_2':
+            model = MgNO_DC_2(**modelOpt).to(device)
+        elif model_type == 'MgNO_DC':
+            model = MgNO_DC(**modelOpt).to(device)
+        elif model_type == 'MgNO_DC_3':
+            model = MgNO_DC_3(**modelOpt).to(device)
+        elif model_type == 'MgNO_DC_4':
+            model = MgNO_DC_4(**modelOpt).to(device)
+        # model = get_model().to(device)
     if log_if:    
         logging.info(count_params(model))
     optimizer, scheduler = getOptimizerScheduler(model.parameters(), **optimizerScheduler_args)
     
-    h1loss = HsLoss(d=2, p=2, k=1, size_average=False, res=y_train.size(1),)
+    h1loss = HsLoss(d=2, p=2, k=1, a=dataOpt['loss_weight'], size_average=False, res=y_train.size(1),)
     h1loss.cuda(device)
     if dataOpt['data'] == 'helm':
         h1loss = HSloss_d()
@@ -98,6 +119,8 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         train_f_dist = torch.zeros(y_train.size(1))
 
         for x, y in train_loader:
+            x = x.to(device)
+            y = y.to(device)
             optimizer.zero_grad()
             out = model(x)
             if dataOpt['loss_type']=='h1':
@@ -133,6 +156,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
 
         with torch.no_grad():
             for x, y in test_loader:
+                x, y = x.to(device), y.to(device)
                 out = model(x)
                 test_l2 += l2loss(out, y).item()
                 test_h1 += h1loss(out, y)[0].item()
@@ -147,7 +171,8 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     ############################
     
     train_h1_rec, train_l2_rec, test_l2_rec, test_h1_rec = [], [], [], []
-    val_l2_rec, val_h1_rec = [], [],
+    if validate:
+        val_l2_rec, val_h1_rec = [], [],
     
     best_l2, best_test_l2, best_test_h1, arg_min_epoch = 1.0, 1.0, 1.0, 0  
     with tqdm(total=optimizerScheduler_args['epochs'], disable=tqdm_disable) as pbar_ep:
@@ -156,25 +181,28 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
             desc = f"epoch: [{epoch+1}/{optimizerScheduler_args['epochs']}]"
             lr, train_l2, train_h1, train_f_dist = train(train_loader)
             test_l2, test_h1 = test(test_loader)
-            val_l2, val_h1 = test(val_loader)
+            if validate:
+                val_l2, val_h1 = test(val_loader)
             
             train_l2_rec.append(train_l2); train_h1_rec.append(train_h1) 
             test_l2_rec.append(test_l2); test_h1_rec.append(test_h1)
-            val_l2_rec.append(val_l2); val_h1_rec.append(val_h1)
-
-            if val_l2 < best_l2:
-                best_l2 = val_l2
-                arg_min_epoch = epoch
-                best_test_l2 = test_l2
-                best_test_h1 = test_h1
+            if validate:
+                val_l2_rec.append(val_l2); val_h1_rec.append(val_h1)
+            if validate:
+                if val_l2 < best_l2:
+                    best_l2 = val_l2
+                    arg_min_epoch = epoch
+                    best_test_l2 = test_l2
+                    best_test_h1 = test_h1
            
             desc += f" | current lr: {lr:.3e}"
             desc += f"| train l2 loss: {train_l2:.3e} "
             desc += f"| train h1 loss: {train_h1:.3e} "
             desc += f"| test l2 loss: {test_l2:.3e} "
             desc += f"| test h1 loss: {test_h1:.3e} "
-            desc += f"| val l2 loss: {val_l2:.3e} "
-            desc += f"| val h1 loss: {val_h1:.3e} "
+            if validate:
+                desc += f"| val l2 loss: {val_l2:.3e} "
+                desc += f"| val h1 loss: {val_h1:.3e} "
            
             pbar_ep.set_description(desc)
             pbar_ep.update()
@@ -182,7 +210,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
                 logging.info(desc) 
 
 
-        if log_if: 
+        if log_if and validate: 
             logging.info(f" test h1 loss: {best_test_h1:.3e}, test l2 loss: {best_test_l2:.3e}")
                  
         if log_if:
@@ -215,7 +243,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-            "--data", type=str, default="darcy20c6", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin")
+            "--data", type=str, default="ns_merge", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin")
     parser.add_argument(
             "--model_type", type=str, default="MgNO_DC", help="FNO, MgNO")
     parser.add_argument(
@@ -223,19 +251,21 @@ if __name__ == "__main__":
     parser.add_argument(
             "--batch_size", type=int, default=8, help="batch size")
     parser.add_argument(
+            "--optimizer_type", type=str, default="adam", help="optimizer type")
+    parser.add_argument(
             "--lr", type=float, default=3e-4, help="learning rate")
     parser.add_argument(
             "--final_div_factor", type=float, default=100, help="final_div_factor")
     parser.add_argument(
             "--weight_decay", type=float, default=1e-4, help="weight decay")
     parser.add_argument(
-            "--loss_type", type=str, default="h1", help="loss type, l2, h1")
+            "--loss_type", type=str, default="l2", help="loss type, l2, h1")
     parser.add_argument(
             "--GN", action='store_true', help="use normalized x")
     parser.add_argument(
             "--sample_x", action='store_true', help="sample x")
     parser.add_argument(
-            "--sampling_rate", type=int, default=2, help="sampling rate")
+            "--sampling_rate", type=int, default=1, help="sampling rate")
     parser.add_argument(
             "--normalizer", action='store_true', help="use normalizer")
     parser.add_argument(
@@ -249,8 +279,9 @@ if __name__ == "__main__":
     parser.add_argument(
             '--num_iteration', type=list, nargs='+', default=[[1,0], [1,0], [1,0], [2,0], [2,0]], help='number of iterations in each layer')
     parser.add_argument(
-            '--padding_mode', type=str, default='zeros', help='padding mode')
-  
+            '--padding_mode', type=str, default='reflect', help='padding mode')
+    parser.add_argument(
+            '--last_layer', type=str, default='conv', help='last layer type')
 
     args = parser.parse_args()
     args = vars(args)
@@ -295,10 +326,11 @@ if __name__ == "__main__":
     modelOpt['normalizer'] = args['normalizer'] 
     modelOpt['output_dim'] = 1
     modelOpt['activation'] = 'gelu'    
- 
+    modelOpt['padding_mode'] = args['padding_mode']
+    modelOpt['last_layer'] = args['last_layer']
 
     optimizerScheduler_args = {}
-    optimizerScheduler_args['optimizer_type'] = 'adam'
+    optimizerScheduler_args['optimizer_type'] = args['optimizer_type']
     optimizerScheduler_args['lr'] = args['lr']
     optimizerScheduler_args['weight_decay'] = args['weight_decay']
     optimizerScheduler_args['epochs'] = args['epochs']
@@ -306,7 +338,7 @@ if __name__ == "__main__":
     optimizerScheduler_args['div_factor'] = 2
 
     darcy.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
-    validate=True, tqdm_disable=True, log_if=True, 
+    validate=False, tqdm_disable=True, log_if=True, 
     model_save=True, )
 
 
