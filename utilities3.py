@@ -812,7 +812,7 @@ def getOptimizerScheduler(parameters, epochs, optimizer_type='adam', lr=0.001,
     elif optimizer_type == 'adagrad':
         optimizer =  torch.optim.Adagrad(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adam':
-        optimizer =  torch.optim.Adam(parameters, lr=lr, weight_decay=weight_decay)
+        optimizer =  Adam(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adamax':
         optimizer =  torch.optim.Adamax(parameters, lr=lr, weight_decay=weight_decay)
     elif optimizer_type == 'adamw':

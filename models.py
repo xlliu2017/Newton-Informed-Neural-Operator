@@ -2,13 +2,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# from torchinfo import summary
+from torchinfo import summary
 from utilities3 import count_params
 
 
 
 class Conv2dAttn(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=1, bias=True):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=1, bias=True, padding_mode='zeros'):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -16,9 +16,9 @@ class Conv2dAttn(nn.Module):
         self.stride = stride
         self.padding = padding
 
-        self.conv = nn.Conv2d(in_channels, out_channels*4, kernel_size, stride, padding, bias=bias)
+        self.conv = nn.Conv2d(in_channels, out_channels*4, kernel_size, stride, padding, bias=bias, padding_mode=padding_mode)
         self.norm = nn.GroupNorm(4, out_channels, affine=True)
-        
+        self.m = nn.Softmax(dim=1)
     def forward(self, x):
         qkv = self.conv(x)
         qkv = qkv.view(qkv.shape[0], 2, 2, self.out_channels, qkv.shape[2], qkv.shape[3])
@@ -26,7 +26,8 @@ class Conv2dAttn(nn.Module):
         k = qkv[:,0,...]
         v = qkv[:,1,...]
         # out1 = torch.einsum('ijlm, ijklm, ijklm -> ijlm', x, k, v)
-        xk = torch.einsum('iklm, ijklm -> ijlm', x, k)/100
+        # xk = torch.einsum('iklm, ijklm -> ijlm', x, k)/400
+        xk = self.m(torch.einsum('iklm, ijklm -> ijlm', x, k))
         out = torch.einsum('ijlm, ijklm -> iklm', xk, v)
         # out = self.norm(out)
         # assert torch.allclose(out1, out3)
@@ -61,17 +62,15 @@ class MgIte_2(nn.Module):
         super().__init__()
  
         self.A = A
-        self.S = S
+        # self.S = S
+        # in_chans = self.S.in_channels
+        # out_channels = self.S.out_channels
+        # self.norm = nn.GroupNorm(2, out_channels, affine=True)
 
     def forward(self, out):
         
-        if isinstance(out, tuple):
-            u, f = out
-            u = u + (f-self.A(u)) 
-        else:
-            f = out
-            u = self.S(f)
-
+        u, f = out
+        u = u + self.A(u)
         out = (u, f)
         return out
 
@@ -218,8 +217,11 @@ class MgConv_DC(nn.Module):
                 if l==0 and i==0:
                     layers.append(MgIte_init(S))
                 else:
-                    if num_channel_f==num_channel_u:
-                        S = Conv2dAttn(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, )
+                    # if num_channel_f==num_channel_u:
+                    #     S = Conv2dAttn(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, )
+                    #     A = Conv2dAttn(num_channel_u, num_channel_f, kernel_size=3, stride=1, padding=1, )
+                    #     layers.append(MgIte_2(A, S))
+                    # else:
                     A = nn.Conv2d(num_channel_u, num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
                     layers.append(MgIte(A, S))
             if not num_iteration_l[1] == 0:
@@ -259,17 +261,18 @@ class MgConv_DC(nn.Module):
 
 class MgNO_DC(nn.Module):
     def __init__(self, num_layer, num_channel_u, num_channel_f, num_classes, num_iteration, 
-    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='zeros', last_layer='conv'):
+    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='zeros', last_layer='conv', linear_layer=True):
         super().__init__()
         self.num_layer = num_layer
         self.num_channel_u = num_channel_u
         self.num_channel_f = num_channel_f
         self.num_classes = num_classes
         self.num_iteration = num_iteration
-
+        self.linear_layer = linear_layer
         self.conv_list = nn.ModuleList([])
         self.linear_list = nn.ModuleList([])
-        self.linear_list.append(nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True))   
+        if linear_layer:
+            self.linear_list.append(nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True))   
         self.conv_list.append(MgConv_DC(num_iteration, num_channel_u, num_channel_f, padding_mode=padding_mode))   
         for _ in range(num_layer-1):
             self.conv_list.append(MgConv_DC(num_iteration, num_channel_u, num_channel_u, padding_mode=padding_mode)) 
@@ -281,6 +284,9 @@ class MgNO_DC(nn.Module):
             self.linear = nn.Conv2d(num_channel_u, 1, kernel_size=1, bias=False)
         else:
             raise NameError('invalid last_layer')
+        self.norm_list = nn.ModuleList([])
+        for _ in range(num_layer):
+            self.norm_list.append(nn.GroupNorm(1, num_channel_u, affine=True))
         self.normalizer = normalizer
 
         if activation == 'relu':
@@ -294,9 +300,13 @@ class MgNO_DC(nn.Module):
         else: raise NameError('invalid activation') 
         
     def forward(self, u):
-     
-        for i in range(self.num_layer):
-            u = self.act(self.conv_list[i](u) + self.linear_list[i](u))
+        if self.linear_layer:
+            for i in range(self.num_layer):
+                u = self.act((self.conv_list[i](u) + self.linear_list[i](u)))
+        else:
+            for i in range(self.num_layer):
+                u = self.act(self.conv_list[i](u))
+            
         u = self.normalizer.decode(self.linear(u)).squeeze() if self.normalizer else self.linear(u).squeeze()
         return u 
 
@@ -344,7 +354,7 @@ class MgNO_DC_2(nn.Module):
 
 
 class MgConv_DC_3(nn.Module):
-    def __init__(self, num_iteration, num_channel_u, num_channel_f, padding_mode='zeros', bias=False, use_res=False, ):
+    def __init__(self, num_iteration, num_channel_u, num_channel_f, padding_mode='zeros', bias=True, use_res=False, ):
         super().__init__()
         self.num_iteration = num_iteration
         self.num_channel_u = num_channel_u
@@ -362,8 +372,13 @@ class MgConv_DC_3(nn.Module):
                 if l==0 and i==0:
                     layers.append(MgIte_init(S))
                 else:
-                    A = nn.Conv2d((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
-                    layers.append(MgIte(A, S))
+                    if num_channel_f==num_channel_u:
+                        S = Conv2dAttn((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        A = Conv2dAttn((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        layers.append(MgIte_2(A, S))
+                    else:
+                        A = nn.Conv2d((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                        layers.append(MgIte(A, S))
             if not num_iteration_l[1] == 0:
                 for i in range(num_iteration_l[1]):
                     S = nn.Conv2d((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
@@ -393,7 +408,7 @@ class MgConv_DC_3(nn.Module):
         # upblock                                 
         for j in range(len(self.num_iteration)-2,-1,-1):
             u, f = out_list[j][0], out_list[j][1]
-            u_post = u + self.RTlayers[j](out_list[j+1][0])
+            u_post = u + self.RTlayers[j](F.gelu(out_list[j+1][0]))
             out = (u_post, f)
             out_list[j] = getattr(self, 'post_smooth_layer'+str(j))(out) 
             
@@ -401,7 +416,7 @@ class MgConv_DC_3(nn.Module):
 
 class MgNO_DC_3(nn.Module):
     def __init__(self, num_layer, num_channel_u, num_channel_f, num_classes, num_iteration, 
-    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='zeros', last_layer='conv'):
+    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='circular', last_layer='conv', bias=False, mlp_hidden_dim=0):
         super().__init__()
         self.num_layer = num_layer
         self.num_channel_u = num_channel_u
@@ -415,11 +430,11 @@ class MgNO_DC_3(nn.Module):
         self.conv_list.append(MgConv_DC_3(num_iteration, num_channel_u, num_channel_f, padding_mode=padding_mode))   
         for j in range(num_layer-1):
             self.conv_list.append(MgConv_DC_3(num_iteration, num_channel_u, num_channel_u, padding_mode=padding_mode)) 
-            self.linear_list.append(nn.Conv2d(num_channel_u, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True))
+            # self.linear_list.append(nn.Conv2d(num_channel_u, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True))
         
-        self.norm_layer_list = nn.ModuleList([])
-        for _ in range(num_layer):
-            self.norm_layer_list.append(nn.GroupNorm(4, num_channel_u, affine=True))
+        # self.norm_layer_list = nn.ModuleList([])
+        # for _ in range(num_layer):
+        #     self.norm_layer_list.append(nn.GroupNorm(4, num_channel_u, affine=True))
 
         if last_layer == 'conv':
             self.linear = nn.Conv2d(num_channel_u, 1, kernel_size=3, padding=1, padding_mode=padding_mode)
@@ -440,11 +455,13 @@ class MgNO_DC_3(nn.Module):
         else: raise NameError('invalid activation') 
         
     def forward(self, u):
-     
+        u_0 = u
         for i in range(self.num_layer):
-            u = self.act(self.norm_layer_list[i](self.conv_list[i](u) + self.linear_list[i](u)))
-        u = self.normalizer.decode(self.linear(u)).squeeze() if self.normalizer else self.linear(u).squeeze()
-        return u
+            # u = self.act(self.norm_layer_list[i](self.conv_list[i](u) ))
+            u = self.act((self.conv_list[i](u) ))
+
+        u = self.normalizer.decode(self.linear(u)) if self.normalizer else self.linear(u)
+        return u + u_0
 
 class MgConv_DC_4(nn.Module):
     def __init__(self, num_iteration, num_channel_u, num_channel_f, padding_mode='zeros', bias=False, use_res=False, groups=1):
@@ -970,15 +987,15 @@ class MgConv_DC_smooth(nn.Module):
 if __name__ == "__main__":
     
     torch.autograd.set_detect_anomaly(True)
-    model = MgNO_DC_4(num_layer=5, num_channel_u=32, num_channel_f=1, num_classes=1, num_iteration=[[1,0], [1,0], [1,0], [1,1], [2,0]],).cuda()
+    model = MgNO_DC_3(num_layer=4, num_channel_u=24, num_channel_f=1, num_classes=1, num_iteration=[[1,0], [1,0], [1,0], [1,1], [2,0]],).cuda()
     # model = MgNO_helm(num_layer=4, num_channel_u=20, num_channel_f=1, num_classes=1, num_iteration=[[1,0], [1,0], [1,0], [1,0], [2,0]]).cuda()
 
     print(model)
     print(count_params(model))
-    inp = torch.randn(10, 1, 128, 128).cuda()
+    inp = torch.randn(10, 1, 101, 101).cuda()
     out = model(inp)
     print(out.shape)
-    # summary(model, input_size=(10, 1, 128, 128))
+    # summary(model, input_size=(10, 1, 512, 512))
     # backward check
     out.sum().backward()
     print('success!')

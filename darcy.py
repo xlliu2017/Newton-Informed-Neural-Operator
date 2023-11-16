@@ -85,7 +85,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     ################################################################
     # training and evaluation
     ################################################################
-    if dataOpt['data'] == 'darcy20c6':
+    if dataOpt['data'] in  {'darcy20c6', 'a4f1'}:
         model = MgNO_DC(**modelOpt).to(device)
     elif dataOpt['data'] == 'darcy':
         model = MgNO_DC_smooth(**modelOpt).to(device)
@@ -153,24 +153,28 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     def test(test_loader):
         model.eval()
         test_l2, test_h1 = 0., 0.
-
+        test_f_dist = torch.zeros(y_test.size(1))
         with torch.no_grad():
             for x, y in test_loader:
                 x, y = x.to(device), y.to(device)
                 out = model(x)
                 test_l2 += l2loss(out, y).item()
-                test_h1 += h1loss(out, y)[0].item()
+                test_h1loss, test_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                test_h1 += test_h1loss.item()
+                test_f_dist += sum(torch.squeeze(torch.abs(f_l2x-f_l2y))).cpu()
+                
         test_l2/= len(dataOpt['dataSize']['test'])
         test_h1/= len(dataOpt['dataSize']['test'] )          
-        
-        return  test_l2, test_h1
+        test_f_dist/= len(dataOpt['dataSize']['test'] ) 
+
+        return  test_l2, test_h1, test_f_dist
 
         
     ############################  
     ###### start to train ######
     ############################
     
-    train_h1_rec, train_l2_rec, test_l2_rec, test_h1_rec = [], [], [], []
+    train_h1_rec, train_l2_rec, train_f_dist_rec, test_l2_rec, test_h1_rec, test_f_dist_rec = [], [], [], [], [], []
     if validate:
         val_l2_rec, val_h1_rec = [], [],
     
@@ -180,12 +184,12 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         for epoch in range(optimizerScheduler_args['epochs']):
             desc = f"epoch: [{epoch+1}/{optimizerScheduler_args['epochs']}]"
             lr, train_l2, train_h1, train_f_dist = train(train_loader)
-            test_l2, test_h1 = test(test_loader)
+            test_l2, test_h1, test_f_dist = test(test_loader)
             if validate:
                 val_l2, val_h1 = test(val_loader)
             
-            train_l2_rec.append(train_l2); train_h1_rec.append(train_h1) 
-            test_l2_rec.append(test_l2); test_h1_rec.append(test_h1)
+            train_l2_rec.append(train_l2); train_h1_rec.append(train_h1); train_f_dist_rec.append(train_f_dist)
+            test_l2_rec.append(test_l2); test_h1_rec.append(test_h1); test_f_dist_rec.append(test_f_dist)
             if validate:
                 val_l2_rec.append(val_l2); val_h1_rec.append(val_h1)
             if validate:
@@ -222,7 +226,10 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
             logging.info(test_l2_rec)
             logging.info('test h1 rec:')
             logging.info(test_h1_rec)
-            
+            logging.info('train_f_dist_rec')
+            logging.info(torch.stack(train_f_dist_rec))
+            logging.info('test_f_dist_rec')
+            logging.info(torch.stack(test_f_dist_rec))
  
             
     if model_save:
@@ -295,7 +302,7 @@ if __name__ == "__main__":
         if args['data'] in {'darcy', 'darcy20c6', 'darcy15c10', 'darcyF', 'darcy_contin'}:
             args['sampling_rate'] = 2
         elif args['data'] == 'a4f1':
-            args['sampling_rate'] = 4
+            args['sampling_rate'] = 8
         elif args['data'] == 'helm':
             args['sampling_rate'] = 1
         elif args['data'] == 'pipe':
