@@ -305,7 +305,7 @@ class HSloss_d_2(nn.MSELoss):
 # Sobolev norm (HS norm)
 # where we also compare the numerical derivatives between the output and target
 class HsLoss(object):
-    def __init__(self, d=2, p=2, k=1, a=None, group=False, size_average=True, reduction=True, truncation=True, res=256, return_freq=True, return_l2=True):
+    def __init__(self, d=2, p=2, k=1, a=None, group=False, size_average=True, reduction=True, truncation=True, res=256, return_freq=True, return_l2=True, relative=True):
         super().__init__()
 
         #Dimension and Lp-norm type are postive
@@ -317,6 +317,7 @@ class HsLoss(object):
         self.balanced = group
         self.reduction = reduction
         self.size_average = size_average
+        self.relative = relative
         self.res = res
         self.return_freq = return_freq
         self.return_l2 = return_l2
@@ -353,6 +354,19 @@ class HsLoss(object):
                 return torch.sum(diff_norms/y_norms)
         return diff_norms/y_norms
 
+    def abs(self, x, y):
+        num_examples = x.size()[0]
+        #Assume uniform mesh
+        # h = 1.0 / (x.size()[1] - 1.0)
+        all_norms = torch.norm(x.view(num_examples,-1) - y.view(num_examples,-1), self.p, 1)
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(all_norms)
+            else:
+                return torch.sum(all_norms)
+
+        return all_norms
+
     def __call__(self, x, y, a=None, return_l2=True):
         nx = x.size()[1]
         ny = x.size()[2]
@@ -374,8 +388,12 @@ class HsLoss(object):
             if k >= 2:
                 weight += a[1]**2 * (self.k_x**4 + 2*self.k_x**2*k_y**2 + k_y**4)
             weight = torch.sqrt(weight)
-            loss = self.rel(x*weight, y*weight)
-            l2loss = self.rel(x, y)
+            if self.relative:
+                loss = self.rel(x*weight, y*weight)
+                l2loss = self.rel(x, y)
+            else:
+                loss = self.abs(x*weight, y*weight)
+                l2loss = self.abs(x, y)
         else:
             loss = self.rel(x, y)
             if k >= 1:
@@ -392,10 +410,157 @@ class HsLoss(object):
             return loss, l2loss
         else:
             return loss
-    
-    
 
 
+class HsLoss_2(nn.Module):
+    def __init__(self, d=2, p=2, k=1, a=None, size_average=True, reduction=True, truncation=True, res=256, relative=True):
+        super().__init__()
+        assert d > 0 and p > 0
+
+        self.d = d
+        self.p = p
+        self.reduction = reduction
+        self.size_average = size_average
+        self.relative = relative
+        self.res = res
+        self.truncation = truncation
+        
+        if a is None:
+            a = [1,] * k
+
+        # Ensure all tensors and operations are conducted on the correct device
+        self.register_buffer('weight', self.calculate_weight(k, a, res, truncation))
+
+    def calculate_weight(self, k, a, res, truncation):
+        
+        k_x = torch.cat((torch.arange(start=0, end=res//2, step=1),torch.arange(start=-res//2, end=0, step=1)), 0).reshape(res,1).repeat(1,res)
+        k_y = torch.cat((torch.arange(start=0, end=res//2, step=1),torch.arange(start=-res//2, end=0, step=1)), 0).reshape(1,res).repeat(res,1)
+                            
+        if truncation:
+            k_x, k_y = (torch.abs(k_x) * (torch.abs(k_x) < 20)), (torch.abs(k_y) * (torch.abs(k_y) < 20))
+        else:
+            k_x, k_y = torch.abs(k_x), torch.abs(k_y)
+
+        weight = 1
+        if k >= 1:
+            weight += a[0]**2 * (k_x**2 + k_y**2)
+        if k >= 2:
+            weight += a[1]**2 * (k_x**4 + 2*k_x**2*k_y**2 + k_y**4)
+        weight = torch.sqrt(weight)
+
+        return weight
+
+    def rel(self, x, y):
+        num_examples = x.size()[0]
+        diff_norms = torch.norm(x.reshape(num_examples,-1) - y.reshape(num_examples,-1), self.p, 1)
+        y_norms = torch.norm(y.reshape(num_examples,-1), self.p, 1)
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(diff_norms/y_norms)
+            else:
+                return torch.sum(diff_norms/y_norms)
+        return diff_norms/y_norms
+
+    def abs(self, x, y):
+        num_examples = x.size()[0]
+        #Assume uniform mesh
+        h = 1.0 / (x.size()[1] - 1.0)
+        all_norms = (h**(self.d/self.p))*torch.norm(x.view(num_examples,-1) - y.view(num_examples,-1), self.p, 1)
+        if self.reduction:
+            if self.size_average:
+                return torch.mean(all_norms)
+            else:
+                return torch.sum(all_norms)
+
+        return all_norms
+
+    def forward(self, x, y):
+        # Adjust the shape of x and y for FFT and weight application
+        x = x.view(x.shape[0], self.res, self.res, -1)
+        y = y.view(y.shape[0], self.res, self.res, -1)
+
+        x_fft = torch.fft.fftn(x, dim=[1, 2], norm='ortho')
+        y_fft = torch.fft.fftn(y, dim=[1, 2], norm='ortho')
+        
+        # Apply weights
+        x_weighted = x_fft * self.weight
+        y_weighted = y_fft * self.weight
+        
+        # Compute the loss
+        if self.relative:
+            loss = self.rel(x_weighted, y_weighted)
+        else:
+            loss = self.abs(x_weighted, y_weighted)
+        return loss
+        
+
+
+class PDEloss(nn.MSELoss):
+    def __init__(self, reduction='sum', res=256):
+        super().__init__(reduction=reduction)
+        kernel00 = torch.tensor([[[[0.,0,0],[0,1,0],[0,0,0]]]])
+        kernel01 = torch.tensor([[[[0.,-1,0],[0,0,0],[0,0,0]]]])
+        kernel10 = torch.tensor([[[[0.,0,0],[0,0,-1],[0,0,0]]]])
+        kernel0_1 = torch.tensor([[[[0.,0,0],[0,0,0],[0,-1,0]]]])
+        kernel_10 = torch.tensor([[[[0.,0,0],[-1,0,0],[0,0,0]]]])
+        # concate the kernels to be the shape of [5,1,3,3]
+        kernel = torch.cat([kernel00, kernel01, kernel10, kernel0_1, kernel_10], dim=0)
+        # initialize the weight of the conv1 to be kernel
+
+        self.register_buffer('kernel', kernel)
+        # register the kernels as a buffer
+  
+        f = torch.tensor.ones(res, res).reshape(1, res, res)/ (res**2)
+        self.register_buffer('f', f)
+    
+    def diva_fem(self, u, a):
+        # u is in shape of batch*1*res*res, a is in shape of batch*5*res*res
+        # F.conv2d(u, self.kernel, padding=1) is in shape of batch*5*res*res
+        # return the F.conv2d(u, self.kernel, padding=1) * a and sum over the channel dimension
+  
+        return torch.sum(F.conv2d(u, self.kernel, padding=1) * a, dim=1, keepdim=False)
+    
+    def forward(self, u, f, a):
+        loss = torch.linalg.norm(self.diva_fem(u, a)-f)
+        # loss = super().forward(self.diva_fem(u, a), f)
+        return loss 
+
+class PDEloss_2(nn.MSELoss):
+
+    #def create_rhs(N, h, s):
+    """Create the right-hand side of the linear system."""
+    # x = np.linspace(0, 1, N)
+    # y = np.linspace(0, 1, N)
+    # X, Y = np.meshgrid(x, y)
+    # rhs = -s * np.sin(np.pi * X) * np.sin(np.pi * Y)
+    # return rhs.flatten()
+    def __init__(self, reduction='sum', N=63, s=1600):
+        super().__init__(reduction=reduction)
+        self.h = 1.0 / (N + 1)
+        kernel = torch.tensor([[[[0.,-1,0],[-1,4,-1],[0,-1,0]]]])/self.h**2
+        self.register_buffer('kernel', kernel)
+        # register the rhs as a buffer
+        
+        x = torch.linspace(0, 1, N)
+        y = torch.linspace(0, 1, N)
+        X, Y = torch.meshgrid(x, y)
+        rhs = -s * torch.sin(np.pi * X) * torch.sin(np.pi * Y)
+        self.register_buffer('rhs', rhs.reshape(N, N))
+    
+    def laplace_minus_u(self, u_current, du):
+        
+        return torch.nn.functional.conv2d(du, self.kernel, padding=1) - 2*du*u_current
+
+    def getGrad(self, u_current):
+
+        return self.rhs + u_current**2 - torch.nn.functional.conv2d(u_current, self.kernel, padding=1)
+
+    def forward(self, u_current, du):
+        f = self.getGrad(u_current)
+        # f = fixed_rhs + u_flat**2 - A.dot(u_flat)
+        # loss = self.h * torch.linalg.norm((self.laplace_minus_u(u_current, du)-f).view(f.size(0), -1), dim=1)
+        loss = self.h**2 * super().forward(self.laplace_minus_u(u_current, du).view(f.size(0), -1), f.view(f.size(0), -1))
+        return loss
 
 def count_params(model):
     """Returns the number of parameters of a PyTorch model"""
@@ -761,14 +926,15 @@ def getNavierDataSet3(opt, device, return_normalizer=False, GN=False, normalizer
     temp = reader.read_field('u').to(device)
     # train_a should be a slice of temp in terms of time window [0: T_in+1] and than [1: T_in+2] and so on till [T: T_in+T+1]
     # cacatenate all these slices in the first axis to get train_a
-
-    train_a = temp[:ntrain,::r,::r,:T_in]
-    train_u = temp[:ntrain,::r,::r,T_in:T_in+1]
+    # s is the start time index of the slice
+   
+    train_a = temp[:ntrain,::r,::r,T_out-T_in:T_out]
+    train_u = temp[:ntrain,::r,::r,T_out:T_out+1]
     assert(opt['full_train_2'] is True)
 
     for i in range(1, T):
-        train_a = torch.cat((train_a, temp[:ntrain,::r,::r,i:T_in+i]), dim=0)
-        train_u = torch.cat((train_u, temp[:ntrain,::r,::r,T_in+i:T_in+i+1]), dim=0)
+        train_a = torch.cat((train_a, temp[:ntrain,::r,::r,T_out-T_in+i:T_out+i]), dim=0)
+        train_u = torch.cat((train_u, temp[:ntrain,::r,::r,T_out+i:T_out+i+1]), dim=0)
 
 
     test_a = temp[-ntest:,::r,::r,T_out-T_in:T_out]
@@ -823,7 +989,7 @@ def getOptimizerScheduler(parameters, epochs, optimizer_type='adam', lr=0.001,
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, 
                                div_factor=div_factor, 
                                final_div_factor=final_div_factor,
-                               pct_start=0.2,
+                               pct_start=0.1,
                                steps_per_epoch=1, 
                                epochs=epochs)
     return optimizer, scheduler
@@ -863,3 +1029,33 @@ def get_initializer(name):
     elif name == 'kaiming_normal':
         init_ = partial(nn.init.kaiming_normal_)
     return init_
+
+def visual2d(u, title):
+    # Create meshgrid for plotting
+    N = u.shape[0]
+    x = np.linspace(0, 1, N)
+    y = np.linspace(0, 1, N)
+    X, Y = np.meshgrid(x, y)
+
+    # Contour Plot
+    plt.figure(figsize=(12, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.contourf(X, Y, u, 20, cmap='viridis')
+    plt.colorbar()
+    plt.title('Contour Plot of the Solution')
+    plt.xlabel('x')
+    plt.ylabel('y')
+
+    # Surface Plot
+    ax = plt.subplot(1, 2, 2, projection='3d')
+    surf = ax.plot_surface(X, Y, u, cmap='viridis', edgecolor='none')
+    plt.colorbar(surf)
+    ax.set_title('Surface Plot of the Solution')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('u(x, y)')
+
+    plt.tight_layout()
+    plt.show()
+    plt.savefig(title + '.png')

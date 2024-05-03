@@ -57,25 +57,36 @@ class MgIte(nn.Module):
         return out
 
 class MgIte_2(nn.Module):
-    def __init__(self, A, S):
+    def __init__(self, A, S, use_norm=True):
         super().__init__()
  
         self.A = A
         # self.S = S
         # in_chans = self.S.in_channels
         out_channels = self.A.out_channels
-        self.norm = nn.GroupNorm(2, out_channels, affine=True)
-        self.mlp = nn.Sequential(
-            nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
-            nn.GELU(),
-            nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
-        )
+        self.use_norm = use_norm
+        if use_norm:
+            self.norm = nn.GroupNorm(2, out_channels, affine=True)
+            # self.mlp = nn.Sequential(
+            #     nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
+            #     nn.GELU(),
+            #     nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
+            # )
+            self.mlp = nn.Sequential(
+                # nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
+                nn.GELU(),
+                # nn.Conv2d(out_channels, out_channels, kernel_size=1,  bias=True),
+            )
 
     def forward(self, out):
         
         u, f = out
         # u = u + self.A(u)
-        u = self.mlp(self.norm(self.A(u))) 
+        if not self.use_norm:
+            u = self.A(u)
+        else:
+            # u = self.mlp(self.norm(self.A(u))) 
+            u = self.A(self.mlp(self.norm(u))) 
         # u = self.A(u)
         out = (u, f)
         return out
@@ -121,11 +132,14 @@ class Restrict(nn.Module):
         self.A = A
     def forward(self, out):
         u, f = out
-        if self.A is not None:
+        if self.A and self.Pi and self.R:
             f = self.R(f-self.A(u))
-        else:
+            u = self.Pi(u)
+        elif self.Pi and self.R:
             f = self.R(f)
-        u = self.Pi(u)                              
+            u = self.Pi(u)  
+        else:
+            u = self.Pi(u)                           
         out = (u,f)
         return out
 
@@ -194,32 +208,105 @@ class HAConv(nn.Module):
             
         return out_list[0][0]
 
+
+
+class HAConv2(nn.Module):
+    def __init__(self, num_iteration, num_channel_u, num_channel_f, padding_mode='zeros', bias=True, use_res=False, downnorm=False, upnorm=False):
+        super().__init__()
+        self.num_iteration = num_iteration
+        self.num_channel_u = num_channel_u
+        self.padding_mode = padding_mode
+
+        self.up_layers = []
+        for j in range(len(num_iteration)-1):
+            upsample_layer = nn.Sequential(
+                nn.LayerNorm([(j+2)*num_channel_u, 128//2**(j+1), 128//2**(j+1)], elementwise_affine=True) if upnorm else nn.Identity(),
+                # nn.GroupNorm((j+2)*2, (j+2)*num_channel_u, affine=True) if upnorm else nn.Identity(),
+                nn.GELU(),
+                nn.ConvTranspose2d((j+2)*num_channel_u, (j+1)*num_channel_u, kernel_size=4, stride=2, padding=1, bias=bias),  
+            )
+            self.up_layers.append(upsample_layer)
+        self.up_layers = nn.ModuleList(self.up_layers)
+
+        down_layers, post_smooth_layers, layer = [], [], []
+        for l, num_iteration_l in enumerate(num_iteration): #l: l-th layer.   num_iteration_l: the number of iterations of l-th layer
+            post_smooth_layer = []
+            for i in range(num_iteration_l[0]):
+                S = nn.Conv2d((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                if l==0 and i==0:
+                    layer.append(MgIte_init(S))
+                else:
+                    if num_channel_f==num_channel_u:
+                        S = Conv2dAttn((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        A = Conv2dAttn((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        layer.append(MgIte_2(A, S))
+                    else:
+                        A = nn.Conv2d((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                        layer.append(MgIte(A, S))
+            if not num_iteration_l[1] == 0:
+                for i in range(num_iteration_l[1]):
+                    S = Conv2dAttn((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                    A = Conv2dAttn((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                    post_smooth_layer.append(MgIte_2(A, S))
+            else:
+                post_smooth_layer.append(nn.Identity())
+
+            # setattr(self, 'layer'+str(l), nn.Sequential(*layers))
+            down_layers.append(nn.Sequential(*layer))
+            post_smooth_layers.append(nn.Sequential(*post_smooth_layer))
+            # setattr(self, 'post_smooth_layer'+str(l), nn.Sequential(*post_smooth_layer))
+            if l < len(num_iteration)-1:
+                Pi= nn.Conv2d((l+1)*num_channel_u, (l+2)*num_channel_u, kernel_size=3, stride=2, padding=1, bias=bias, padding_mode=padding_mode)
+                layer = [Restrict(Pi=Pi, )]
+     
+        
+        self.down_layers = nn.ModuleList(down_layers)
+        self.post_smooth_layers = nn.ModuleList(post_smooth_layers)
+
+    def forward(self, f):
+        out_list = [0] * len(self.num_iteration)
+        out = f 
+
+        for l in range(len(self.num_iteration)):
+            out = self.down_layers[l](out) 
+            out_list[l] = out
+        # upblock                                 
+        for j in range(len(self.num_iteration)-2,-1,-1):
+            u, f = out_list[j][0], out_list[j][1]
+            u_post = u + self.up_layers[j](out_list[j+1][0])
+            out = (u_post, f)
+            out_list[j] = self.post_smooth_layers[j](out)     
+        return out_list[0][0]
+
+
+
+
 class HANO(nn.Module):
     def __init__(self, num_layer, num_channel_u, num_channel_f, num_classes, num_iteration, 
-    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='circular', last_layer='conv', bias=False, mlp_hidden_dim=0, use_norm=True, patch_embed=True):
+    in_chans=1,  normalizer=None, output_dim=1, activation='gelu', padding_mode='circular', last_layer='linear', bias=False, mlp_hidden_dim=0, use_norm=False, patch_embed=True, use_res=False ):
         super().__init__()
         self.num_layer = num_layer
         self.num_channel_u = num_channel_u
         self.num_channel_f = num_channel_f
         self.num_classes = num_classes
         self.num_iteration = num_iteration
-
+        self.use_res = use_res
         self.conv_list = nn.ModuleList([])
-        self.linear_list = nn.ModuleList([])
-        self.linear_list.append(nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True)) 
+        # self.linear_list = nn.ModuleList([])
+        # self.linear_list.append(nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True)) 
         if patch_embed:
             self.conv_list.append(nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1, bias=True))  
         else:
             self.conv_list.append(HAConv(num_iteration, num_channel_u, num_channel_f, padding_mode=padding_mode))   
         for j in range(num_layer-1):
-            self.conv_list.append(HAConv(num_iteration, num_channel_u, num_channel_u, padding_mode=padding_mode)) 
+            self.conv_list.append(HAConv2(num_iteration, num_channel_u, num_channel_u, padding_mode=padding_mode)) 
             # self.linear_list.append(nn.Conv2d(num_channel_u, num_channel_u, kernel_size=1, stride=1, padding=0, bias=True))
         
         self.norm_layer_list = nn.ModuleList([])
         for _ in range(num_layer):
             if use_norm:
-                self.norm_layer_list.append(nn.GroupNorm(2, num_channel_u, affine=True))
-                # self.norm_layer_list.append(nn.LayerNorm([num_channel_u, 64, 64], elementwise_affine=True))
+                # self.norm_layer_list.append(nn.GroupNorm(2, num_channel_u, affine=True))
+                self.norm_layer_list.append(nn.LayerNorm([num_channel_u, 128, 128], elementwise_affine=True))
             else:
                 self.norm_layer_list.append(nn.Identity())
         if last_layer == 'conv':
@@ -244,7 +331,6 @@ class HANO(nn.Module):
         u_0 = u
         for i in range(self.num_layer):
             u = self.act(self.norm_layer_list[i](self.conv_list[i](u) ))
-            # u = self.act((self.conv_list[i](u) ))
 
         u = self.normalizer.decode(self.linear(u)) if self.normalizer else self.linear(u)
         return u + u_0
@@ -313,10 +399,79 @@ class MgConv_helm2(nn.Module):
         return out_list[0][0]
 
 
+class HAConv_helm(nn.Module):
+    def __init__(self, num_iteration, num_channel_u, num_channel_f,  padding_mode='reflect', upnorm=True, downnorm=False ):
+        super().__init__()
+        self.num_iteration = num_iteration
+        self.num_channel_u = num_channel_u
+
+        # self.RTlayers = nn.ModuleList()
+        # self.RTlayers.append(nn.ConvTranspose2d(num_channel_u * 2, num_channel_u, kernel_size=3, stride=2, padding=0, bias=False, )) 
+        # for j in range(len(num_iteration)-3):
+        #     self.RTlayers.append(nn.ConvTranspose2d(num_channel_u * (j+3), num_channel_u * (j+2), kernel_size=4, stride=2, padding=0, bias=False, )) 
+        # self.RTlayers.append(nn.ConvTranspose2d(num_channel_u * 5, num_channel_u * 4, kernel_size=3, stride=2, padding=0, bias=False, )) 
+        
+        self.up_layers = []
+        for j in range(len(num_iteration)-1):
+            if j == 0 or j == 3:
+                upsample_layer = nn.Sequential(
+                    nn.GroupNorm((j+2)*2, (j+2)*num_channel_u, affine=True) if upnorm else nn.Identity(),
+                    nn.GELU(),
+                    nn.ConvTranspose2d((j+2)*num_channel_u, (j+1)*num_channel_u, kernel_size=3, stride=2, padding=0, ),  
+                )
+            else:
+                upsample_layer = nn.Sequential(
+                    nn.GroupNorm((j+2)*2, (j+2)*num_channel_u, affine=True) if upnorm else nn.Identity(),
+                    nn.GELU(),
+                    nn.ConvTranspose2d((j+2)*num_channel_u, (j+1)*num_channel_u, kernel_size=4, stride=2, padding=0, ),  
+                )
+            self.up_layers.append(upsample_layer)
+        self.up_layers = nn.ModuleList(self.up_layers)
+
+        down_layers, layer = [], []
+        for l, num_iteration_l in enumerate(num_iteration): #l: l-th layer.   num_iteration_l: the number of iterations of l-th layer
+           
+            for i in range(num_iteration_l[0]):
+                A = nn.Conv2d(num_channel_u * (l+1), num_channel_f * (l+1), kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                S = nn.Conv2d(num_channel_f * (l+1), num_channel_u * (l+1), kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                if l==0 and i==0:
+                    layer.append(MgIte_init(S))
+                else:
+                    if num_channel_f==num_channel_u:
+                        S = Conv2dAttn((l+1)*num_channel_f, (l+1)*num_channel_u, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        A = Conv2dAttn((l+1)*num_channel_u, (l+1)*num_channel_f, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        layer.append(MgIte_2(A, S, use_norm=downnorm))
+                    else:
+                        layers.append(MgIte(A, S))
+            down_layers.append(nn.Sequential(*layer))
+        
+            if l < len(num_iteration)-1:
+                Pi = nn.Conv2d(num_channel_u * (l+1), num_channel_u * (l+2), kernel_size=3, stride=2, padding=0, bias=False, padding_mode='zeros')
+                layer= [Restrict(Pi=Pi)]
+
+        self.down_layers = nn.ModuleList(down_layers)
+
+    def forward(self, f):
+
+        u_list = []
+        out = f  
+                                            
+        for l in range(len(self.num_iteration)):
+            out = self.down_layers[l](out)
+            u, f = out                                       
+            u_list.append(u)                                
+
+        # upblock                                 
+
+        for j in range(len(self.num_iteration)-2,-1,-1):
+            u_list[j] = u_list[j] + self.up_layers[j](u_list[j+1])
+        u = u_list[0]
+        
+        return u  
 
 class HANO_helm(nn.Module):
     def __init__(self, num_layer, num_channel_u, num_channel_f, num_classes, num_iteration, 
-    in_chans=3,  normalizer=None,  output_dim=1, activation='gelu', init=False, padding_mode='reflect', last_layer='linear'):
+    in_chans=1,  normalizer=None,  output_dim=1, activation='gelu', padding_mode='reflect', last_layer='linear', use_norm=True, ):
         super().__init__()
         self.num_layer = num_layer
         self.num_channel_u = num_channel_u
@@ -324,14 +479,18 @@ class HANO_helm(nn.Module):
         self.num_classes = num_classes
         self.num_iteration = num_iteration
 
-        # self.norm_layer_list = nn.ModuleList([])
-        # for _ in range(num_layer):
-        #     self.norm_layer_list.append(nn.LayerNorm([num_channel_u, 101, 101]))
-            # self.norm_layer_list.append(nn.Identity())
-        self.patch_embed = nn.Conv2d(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+        self.norm_layer_list = nn.ModuleList([])
+        for _ in range(num_layer):
+            if use_norm:
+                # self.norm_layer_list.append(nn.GroupNorm(2, num_channel_u, affine=True))   
+                self.norm_layer_list.append(nn.LayerNorm([num_channel_u, 101, 101]))
+            else:
+                self.norm_layer_list.append(nn.Identity())
+
+        self.patch_embed = nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1,)
         self.conv_list = nn.ModuleList([])   
         for _ in range(num_layer):
-            self.conv_list.append(MgConv_helm2(num_iteration, num_channel_u, num_channel_u, init=init, padding_mode=padding_mode))
+            self.conv_list.append(HAConv_helm(num_iteration, num_channel_u, num_channel_u,  padding_mode=padding_mode))
  
         if last_layer == 'conv':
             self.last_layer = nn.Conv2d(num_channel_u, 1, kernel_size=3, padding=1, padding_mode=padding_mode)
@@ -354,10 +513,124 @@ class HANO_helm(nn.Module):
     def forward(self, u):
         u = self.act(self.patch_embed(u))
         for i in range(self.num_layer):
-            u = self.act(self.conv_list[i](u))
+            u = self.act(self.norm_layer_list[i](self.conv_list[i](u)))
         return self.normalizer.decode(torch.squeeze(self.last_layer(u))) if self.normalizer else self.last_layer(u)
 
 
+class HAConv_DC(nn.Module):
+    def __init__(self, num_iteration, num_channel_u, num_channel_f, padding_mode='zeros', bias=True, use_res=False, downnorm=True, upnorm=False):
+        super().__init__()
+        self.num_iteration = num_iteration
+        self.num_channel_u = num_channel_u
+        self.padding_mode = padding_mode
+
+        self.up_layers = []
+        for j in range(len(num_iteration)-1):
+            upsample_layer = nn.Sequential(
+                nn.LayerNorm([num_channel_u, 128//2**(j+1), 128//2**(j+1)], elementwise_affine=True) if upnorm else nn.Identity(),
+                # nn.GroupNorm((j+2)*2, (j+2)*num_channel_u, affine=True) if upnorm else nn.Identity(),
+                nn.GELU(),
+                nn.ConvTranspose2d(num_channel_u, num_channel_u, kernel_size=4, stride=2, padding=1, bias=bias),  
+            )
+            self.up_layers.append(upsample_layer)
+        self.up_layers = nn.ModuleList(self.up_layers)
+
+        down_layers, post_smooth_layers, layer = [], [], []
+        for l, num_iteration_l in enumerate(num_iteration): #l: l-th layer.   num_iteration_l: the number of iterations of l-th layer
+            post_smooth_layer = []
+            for i in range(num_iteration_l[0]):
+                S = nn.Conv2d(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                if l==0 and i==0:
+                    layer.append(MgIte_init(S))
+                else:
+                    if num_channel_f==num_channel_u:
+                        S = Conv2dAttn(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        A = Conv2dAttn(num_channel_u, num_channel_f, kernel_size=3, stride=1, padding=1, padding_mode=padding_mode)
+                        layer.append(MgIte_2(A, S, use_norm=downnorm))
+                    else:
+                        A = nn.Conv2d(num_channel_u, num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                        layer.append(MgIte(A, S))
+            if not num_iteration_l[1] == 0:
+                for i in range(num_iteration_l[1]):
+                    S = Conv2dAttn(num_channel_f, num_channel_u, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                    A = Conv2dAttn(num_channel_u, num_channel_f, kernel_size=3, stride=1, padding=1, bias=bias, padding_mode=padding_mode)
+                    post_smooth_layer.append(MgIte_2(A, S))
+            else:
+                post_smooth_layer.append(nn.Identity())
+
+            # setattr(self, 'layer'+str(l), nn.Sequential(*layers))
+            down_layers.append(nn.Sequential(*layer))
+            post_smooth_layers.append(nn.Sequential(*post_smooth_layer))
+            # setattr(self, 'post_smooth_layer'+str(l), nn.Sequential(*post_smooth_layer))
+            if l < len(num_iteration)-1:
+                Pi= nn.Conv2d(num_channel_u, num_channel_u, kernel_size=3, stride=2, padding=1, bias=bias, padding_mode=padding_mode)
+                layer = [Restrict(Pi=Pi, )]
+     
+        
+        self.down_layers = nn.ModuleList(down_layers)
+        self.post_smooth_layers = nn.ModuleList(post_smooth_layers)
+
+    def forward(self, f):
+        out_list = [0] * len(self.num_iteration)
+        out = f 
+
+        for l in range(len(self.num_iteration)):
+            out = self.down_layers[l](out) 
+            out_list[l] = out
+        # upblock                                 
+        for j in range(len(self.num_iteration)-2,-1,-1):
+            u, f = out_list[j][0], out_list[j][1]
+            u_post = u + self.up_layers[j](out_list[j+1][0])
+            out = (u_post, f)
+            out_list[j] = self.post_smooth_layers[j](out)     
+        return out_list[0][0]
+
+class HANO_DC(nn.Module):
+    def __init__(self, num_layer, num_channel_u, num_channel_f, num_classes, num_iteration, 
+    in_chans=1,  normalizer=None,  output_dim=1, activation='gelu', padding_mode='zeros', last_layer='linear', use_norm=False, ):
+        super().__init__()
+        self.num_layer = num_layer
+        self.num_channel_u = num_channel_u
+        self.num_channel_f = num_channel_f
+        self.num_classes = num_classes
+        self.num_iteration = num_iteration
+
+        self.norm_layer_list = nn.ModuleList([])
+        for _ in range(num_layer):
+            if use_norm:
+                # self.norm_layer_list.append(nn.GroupNorm(2, num_channel_u, affine=True))   
+                self.norm_layer_list.append(nn.LayerNorm([num_channel_u, 101, 101]))
+            else:
+                self.norm_layer_list.append(nn.Identity())
+
+        self.patch_embed = nn.Conv2d(num_channel_f, num_channel_u, kernel_size=1, stride=1,)
+        self.conv_list = nn.ModuleList([])   
+        for _ in range(num_layer):
+            self.conv_list.append(HAConv_DC(num_iteration, num_channel_u, num_channel_u,  padding_mode=padding_mode))
+ 
+        if last_layer == 'conv':
+            self.last_layer = nn.Conv2d(num_channel_u, 1, kernel_size=3, padding=1, padding_mode=padding_mode)
+        elif last_layer == 'linear':
+            self.last_layer = nn.Conv2d(num_channel_u, 1, kernel_size=1, bias=False)
+        else:
+            raise NameError('invalid last_layer')
+        self.normalizer = normalizer
+
+        if activation == 'relu':
+            self.act = nn.ReLU()
+        elif activation == 'gelu':
+            self.act = nn.GELU()
+        elif activation == 'tanh':
+            self.act = nn.Tanh()
+        elif activation == 'silu':
+            self.act = nn.SiLU()
+        else: raise NameError('invalid activation') 
+        
+    def forward(self, u):
+        u = self.act(self.patch_embed(u))
+        for i in range(self.num_layer):
+            u = self.act(self.norm_layer_list[i](self.conv_list[i](u)))
+        return self.normalizer.decode(torch.squeeze(self.last_layer(u))) if self.normalizer else self.last_layer(u)
 
 
 
@@ -367,13 +640,13 @@ class HANO_helm(nn.Module):
 if __name__ == "__main__":
     
     torch.autograd.set_detect_anomaly(True)
-    model = HANO(num_layer=4, num_channel_u=24, num_channel_f=1, num_classes=1, num_iteration=[[1,0], [1,0], [1,0], [1,0], [1,0], [1,0]]).cuda()
+    model = HANO_helm(num_layer=4, num_channel_u=24, num_channel_f=1, num_classes=1, num_iteration=[[1,0], [1,0], [1,0], [1,0], [1,0], ]).cuda()
+    summary(model, input_size=(10, 1, 101, 101), device='cuda')
 
-
-    inp = torch.randn(10, 1, 64, 64).cuda()
+    inp = torch.randn(10, 1, 101, 101).cuda()
     out = model(inp)
     print(out.shape)
-
+    
     out.sum().backward()
     print('success!')
     ## NS 1e5 setting
