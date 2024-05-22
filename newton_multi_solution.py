@@ -136,22 +136,21 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     y = deltaAS_list.float().to(device) 
     x = AS_list.to(device).float()
     
-    # if dataOpt['loss_type'] == 'pde':
-    #     y = y.unsqueeze(1)
-        
-    # y = y/y.max()
-    # x = x/x.max()
+  # take out AS_list a specific pattern as test set
+    x_test = x[:54,...]
+    y_test = y[:54,...]
     
     # randomly permute x_train
-    perm = torch.randperm(x.size(0))
-    x = x[perm]
-    y = y[perm]
+    perm = torch.randperm(x.size(0)-54)
+    x = x[54:,...][perm]
+    y = y[54:,...][perm]
 
-    dataOpt['dataSize'] = {'train': range(15000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(15000)}
+    dataOpt['dataSize'] = {'train': range(15000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(5000)}
     x_train = x[dataOpt['dataSize']['train'],...]
     y_train = y[dataOpt['dataSize']['train'],...]
-    x_test = x[dataOpt['dataSize']['test'],...]
-    y_test = y[dataOpt['dataSize']['test'],...]
+    x_test = torch.concatenate((x_test, x[dataOpt['dataSize']['test'],...]), dim=0)
+    y_test = torch.concatenate((y_test, y[dataOpt['dataSize']['test'],...]), dim=0)
+    
     x_train_l2 = x[dataOpt['dataSize']['train_l2'],...]
     y_train_l2 = y[dataOpt['dataSize']['train_l2'],...]
     # x_val = x[dataOpt['dataSize']['val'],...]
@@ -331,7 +330,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
                     else:
                         out = model(x)
                 test_l2 += l2loss(out, y).item()
-                test_h1loss = h1loss(out.view(dataOpt['batch_size']*2,-1), y.view(dataOpt['batch_size']*2,-1))
+                test_h1loss = h1loss(out.view(out.size(0)*2,-1), y.view(out.size(0)*2,-1))
                 test_h1 += test_h1loss.item()
                 # test_f_dist += sum(torch.squeeze(torch.abs(f_l2x-f_l2y))).cpu()
                 
