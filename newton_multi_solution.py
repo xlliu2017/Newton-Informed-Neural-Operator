@@ -145,7 +145,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     x = x[54:,...][perm]
     y = y[54:,...][perm]
 
-    dataOpt['dataSize'] = {'train': range(15000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(5000)}
+    dataOpt['dataSize'] = {'train': range(10000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(10000)}
     x_train = x[dataOpt['dataSize']['train'],...]
     y_train = y[dataOpt['dataSize']['train'],...]
     x_test = torch.concatenate((x_test, x[dataOpt['dataSize']['test'],...]), dim=0)
