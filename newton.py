@@ -26,13 +26,14 @@ class DeepONet(nn.Module):
             # then coarsely downsample the grid of 63x63 to 29x29
             # nn.Unflatten(1, (1, grid_size, grid_size)),
             nn.Conv2d(1, 128, kernel_size=7, stride=2),
+            nn.GELU(),
             nn.Conv2d(128, 128, kernel_size=5, stride=2),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Conv2d(128, 256, kernel_size=5, stride=2),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Flatten(),
             nn.Linear(256 * 5 * 5, 128),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(128, branch_features),
         )
         self.trunk = nn.Sequential(
@@ -59,6 +60,45 @@ class DeepONet(nn.Module):
         out = torch.mm(branch_out, trunk_out.T)
         return out.view(batch_size, 1, self.grid_size, self.grid_size)
 
+class DeepONet_POD(nn.Module):
+    def __init__(self, branch_features, trunk_features, output_features, grid_size=63, V=None):
+        super(DeepONet_POD, self).__init__()
+        self.grid_size = grid_size
+        self.branch = nn.Sequential(
+            # reshape the input to a 2D grid
+            # then coarsely downsample the grid of 63x63 to 29x29
+            # nn.Unflatten(1, (1, grid_size, grid_size)),
+            nn.Conv2d(1, 128, kernel_size=7, stride=2),
+            nn.GELU(),
+            nn.Conv2d(128, 128, kernel_size=5, stride=2),
+            nn.GELU(),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(128, 128, kernel_size=1,),
+            nn.GELU(),
+            nn.Conv2d(128, 256, kernel_size=5, stride=2),
+            nn.GELU(),
+            nn.Flatten(),
+            nn.Linear(256 * 5 * 5, 128),
+            nn.GELU(),
+            nn.Linear(128, branch_features),
+        )
+        # self.branch_2 = nn.Sequential(
+        #     nn.Conv2d(1,128, kernel_size=1),
+        #     nn.GELU(),
+        #     nn.Conv2d(128,1, kernel_size=1)
+        # )
+        
+        self.register_buffer('trunk', V[:branch_features,...].view(branch_features,-1))
+
+    
+    
+    def forward(self, x_branch):
+        batch_size = x_branch.shape[0]
+        branch_out = self.branch(x_branch)
+        out = torch.mm(branch_out, self.trunk)
+        out = out.view(batch_size, 1, self.grid_size, self.grid_size) #+ self.branch_2(x_branch)
+        return out
 
 def objective(dataOpt, modelOpt, optimizerScheduler_args,
                 tqdm_disable=True, 
@@ -91,7 +131,8 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     ################################################################
     u_list, delta_u_list = torch.load('/home/liux0t/neural_MG/pytorch/newton_method_iterations_5.pt')
     u_list_2, delta_u_list_2, solution = torch.load('/home/liux0t/neural_MG/pytorch/newton_method_iterations_7_solution.pt')
-    
+    V = torch.load('/home/liux0t/neural_MG/pytorch/V.pt')
+    V = V.float().contiguous().to(device)
     y = delta_u_list.float().to(device).squeeze()
     x = u_list.to(device).float()
     y_2 = delta_u_list_2.float().to(device).squeeze()
@@ -185,7 +226,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         # model = FNO2d(modes1=12, modes2=12, width=80, normalizer=y_normalizer).to(device)
         model = SpectralDecoder(lift=1, normalizer=y_normalizer, modes=12, num_spectral_layers=5, width=64, init_scale=2).to(device)
     elif model_type == 'DeepONet':
-        model = DeepONet(branch_features=128, trunk_features=128, output_features=1, grid_size=63).to(device)
+        model = DeepONet_POD(branch_features=100, trunk_features=100, output_features=1, grid_size=63, V=V).to(device)
     else:
         raise NameError('invalid model_type')
     
@@ -298,65 +339,65 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     best_l2, best_test_l2, best_test_h1, arg_min_epoch = 1.0, 1.0, 1.0, 0  
     with tqdm(total=optimizerScheduler_args['epochs']*2, disable=tqdm_disable) as pbar_ep:
                             
-        for epoch in range(optimizerScheduler_args['epochs']):
-            desc = f"epoch: [{epoch+1}/{optimizerScheduler_args['epochs']}]"
-            dataOpt['loss_type'] = 'l2'
-            lr, train_l2, train_h1 = train(train_loader_l2)
+        # for epoch in range(optimizerScheduler_args['epochs']):
+        #     desc = f"epoch: [{epoch+1}/{optimizerScheduler_args['epochs']}]"
+        #     dataOpt['loss_type'] = 'l2'
+        #     lr, train_l2, train_h1 = train(train_loader_l2)
             
-            test_l2, test_h1 = test(test_loader)
-            if validate:
-                val_l2, val_h1 = test(val_loader)
+        #     test_l2, test_h1 = test(test_loader)
+        #     if validate:
+        #         val_l2, val_h1 = test(val_loader)
             
-            train_l2_rec.append(train_l2); train_h1_rec.append(train_h1); 
-            test_l2_rec.append(test_l2); test_h1_rec.append(test_h1); 
-            if validate:
-                val_l2_rec.append(val_l2); val_h1_rec.append(val_h1)
-            if validate:
-                if val_l2 < best_l2:
-                    best_l2 = val_l2
-                    arg_min_epoch = epoch
-                    best_test_l2 = test_l2
-                    best_test_h1 = test_h1
+        #     train_l2_rec.append(train_l2); train_h1_rec.append(train_h1); 
+        #     test_l2_rec.append(test_l2); test_h1_rec.append(test_h1); 
+        #     if validate:
+        #         val_l2_rec.append(val_l2); val_h1_rec.append(val_h1)
+        #     if validate:
+        #         if val_l2 < best_l2:
+        #             best_l2 = val_l2
+        #             arg_min_epoch = epoch
+        #             best_test_l2 = test_l2
+        #             best_test_h1 = test_h1
            
-            desc += f" | current lr: {lr:.3e}"
-            desc += f"| train l2 loss: {train_l2:.3e} "
-            desc += f"| train h1 loss: {train_h1:.3e} "
-            desc += f"| test l2 loss: {test_l2:.3e} "
-            desc += f"| test h1 loss: {test_h1:.3e} "
-            if validate:
-                desc += f"| val l2 loss: {val_l2:.3e} "
-                desc += f"| val h1 loss: {val_h1:.3e} "
+        #     desc += f" | current lr: {lr:.3e}"
+        #     desc += f"| train l2 loss: {train_l2:.3e} "
+        #     desc += f"| train h1 loss: {train_h1:.3e} "
+        #     desc += f"| test l2 loss: {test_l2:.3e} "
+        #     desc += f"| test h1 loss: {test_h1:.3e} "
+        #     if validate:
+        #         desc += f"| val l2 loss: {val_l2:.3e} "
+        #         desc += f"| val h1 loss: {val_h1:.3e} "
            
-            pbar_ep.set_description(desc)
-            pbar_ep.update()
-            if log_if:
-                logging.info(desc) 
+        #     pbar_ep.set_description(desc)
+        #     pbar_ep.update()
+        #     if log_if:
+        #         logging.info(desc) 
 
 
-        if log_if and validate: 
-            logging.info(f" test h1 loss: {best_test_h1:.3e}, test l2 loss: {best_test_l2:.3e}")
+        # if log_if and validate: 
+        #     logging.info(f" test h1 loss: {best_test_h1:.3e}, test l2 loss: {best_test_l2:.3e}")
                  
-        if log_if:
-            logging.info('train l2 rec:')
-            logging.info(train_l2_rec)
-            logging.info('train h1 rec:')
-            logging.info(train_h1_rec)
-            logging.info('test l2 rec:')
-            logging.info(test_l2_rec)
-            logging.info('test h1 rec:')
-            logging.info(test_h1_rec)
+        # if log_if:
+        #     logging.info('train l2 rec:')
+        #     logging.info(train_l2_rec)
+        #     logging.info('train h1 rec:')
+        #     logging.info(train_h1_rec)
+        #     logging.info('test l2 rec:')
+        #     logging.info(test_l2_rec)
+        #     logging.info('test h1 rec:')
+        #     logging.info(test_h1_rec)
         
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-4,
-                               div_factor=2, 
-                               final_div_factor=1e1,
-                               pct_start=0.1,
-                               steps_per_epoch=1, 
-                               epochs=optimizerScheduler_args['epochs'])
+        # scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=optimizerScheduler_args['lr'],
+        #                        div_factor=2, 
+        #                        final_div_factor=2e1,
+        #                        pct_start=0.1,
+        #                        steps_per_epoch=1, 
+        #                        epochs=optimizerScheduler_args['epochs'])
 
         for epoch in range(optimizerScheduler_args['epochs']):
             desc = f"epoch: [{epoch+1}/{optimizerScheduler_args['epochs']}]"
             
-            dataOpt['loss_type'] = 'pde'
+            # dataOpt['loss_type'] = 'pde'
             lr, train_l2, train_h1 = train(train_loader)
             test_l2, test_h1 = test(test_loader)
             if validate:

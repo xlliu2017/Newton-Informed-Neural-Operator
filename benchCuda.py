@@ -92,7 +92,7 @@ def main():
     x = u_list.to(device).float()
    
     dataOpt = {}
-    dataOpt['dataSize'] = {'train': range(500), 'test': range(4000, 5000), 'val':range(600,650)}
+    dataOpt['dataSize'] = {'train': range(5000), 'test': range(4000, 5000), 'val':range(600,650)}
     x_train = x[dataOpt['dataSize']['train'],...]
 
     N = 63
@@ -103,11 +103,11 @@ def main():
     fixed_rhs = create_rhs(N, h, s)
 
     # Assume u_flats is some predefined data; for profiling we'll use random data
-    total_systems = 500
-    num_streams = 5
+    total_systems = 5000
+    num_streams = 10
     systems_per_stream = total_systems // num_streams
     # u_flats = cp.random.rand(N**2, total_systems).astype(cp.float32)
-    x_train = x_train.view(-1, 500)
+    x_train = x_train.view(-1, 5000)
     dlpack = torch.utils.dlpack.to_dlpack(x_train)  # Export tensor data to DLPack
     u_flats = cp.fromDlpack(dlpack).astype(cp.float32)
     
@@ -133,9 +133,9 @@ def main():
     return results
 
 if __name__ == "__main__":
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
     main()
-    profiler.disable()
-    stats = pstats.Stats(profiler).sort_stats('cumtime')
-    stats.print_stats()
+    # profiler.disable()
+    # stats = pstats.Stats(profiler).sort_stats('cumtime')
+    # stats.print_stats()
