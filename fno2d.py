@@ -1,4 +1,5 @@
-import numpy as np
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -423,19 +424,25 @@ def benchmark_spectralconv2d(in_channels, out_channels, modes1, modes2, input_si
     # CPU Memory usage
     tracemalloc.start()
 
-    # GPU Memory & Time usage
-    torch.cuda.synchronize()
+   # GPU Memory & Time usage
+    if device == 'cuda':
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats(device)
+    
     start_time = time.time()
-    torch.cuda.reset_peak_memory_stats(device)
+
 
     with torch.no_grad():
         output = model(input_tensor)
 
-    torch.cuda.synchronize()
-    end_time = time.time()
+    if device == 'cuda':
+        torch.cuda.synchronize()
+        peak_memory_usage = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+    else:
+        peak_memory_usage = 0
 
-    peak_memory_usage = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # In MB
-    cpu_memory_usage = tracemalloc.get_traced_memory()[1] / (1024 ** 2)  # In MB
+    cpu_memory_usage = tracemalloc.get_traced_memory()[1] / (1024 ** 2)
+    end_time = time.time()  
 
     tracemalloc.stop()
 
@@ -488,84 +495,125 @@ class MgRestriction(nn.Module):
         return out
     
 
-class MG_fem(nn.Module):
-    def __init__(self, in_channels=1, out_channels=1, num_iteration=[1,1,1,1,1]):
-        super().__init__()
-        self.num_iteration = num_iteration
-        self.resolutions = [127, 63, 31, 15, 7, 4,]
-        self.RTlayers = nn.ModuleList()
-        for j in range(len(num_iteration)-1):
-            # self.RTlayers.append(nn.ConvTranspose2d(in_channels=in_channels*(j+2), out_channels=out_channels*(j+1), kernel_size=3, stride=2, padding=0, bias=False))
-            self.RTlayers.append(nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=0, bias=False))
 
+class MG_fem(nn.Module):
+    # Multigrid Finite Element Method (MG_fem) module.
+    # This module implements the Multigrid Finite Element Method (MG_fem) for solving partial differential equations.
+    # It consists of a series of convolutional layers and restriction layers to iteratively solve the equation.
+    # Args:
+    #     in_channels (int): Number of input channels.
+    #     out_channels (int): Number of output channels.
+    #     num_iterations (list): List of integers specifying the number of iterations for each layer.
+    # Attributes:
+    #     resolutions (list): List of resolutions for each layer.
+    #     transpose_layers (nn.ModuleList): List of transpose convolution layers.
+    #     conv_layers (nn.ModuleList): List of convolution layers.
+    # Methods:
+    #     forward(u, f, a, diva_list=None, r=None): Performs forward pass of the MG_fem module.
+    #     Initializes the MG_fem module.
+    #     Args:
+    #         in_channels (int, optional): Number of input channels. Defaults to 1.
+    #         out_channels (int, optional): Number of output channels. Defaults to 1.
+    #         num_iterations (list, optional): List of integers specifying the number of iterations for each layer. Defaults to [1, 1, 1, 1, 1].
+    #     Performs forward pass of the MG_fem module.
+    #     Args:
+    #         u (torch.Tensor): Input tensor representing the solution.
+    #         f (torch.Tensor): Input tensor representing the forcing term.
+    #         a (torch.Tensor): Input tensor representing the coefficient function.
+    #         diva_list (list, optional): List of tensors representing the divergence of a for each layer. Defaults to None.
+    #         r (torch.Tensor, optional): Input tensor representing the residual. Defaults to None.
+    #     Returns:
+    #         torch.Tensor: Output tensor representing the solution.
+
+    def __init__(self, in_channels=1, out_channels=1, num_iterations=[1, 1, 1, 1, 1]):
+        super().__init__()
+        self.num_iterations = num_iterations
+        self.resolutions = [127, 63, 31, 15, 7, 4]
+        
+        # Initialize transpose convolution layers
+        self.transpose_layers = nn.ModuleList()
+        for _ in range(len(num_iterations) - 1):
+            self.transpose_layers.append(
+                nn.ConvTranspose2d(
+                    in_channels=in_channels, 
+                    out_channels=out_channels, 
+                    kernel_size=3, 
+                    stride=2, 
+                    padding=0, 
+                    bias=False
+                )
+            )
+
+        # Initialize convolution layers
         self.conv_layers = nn.ModuleList()
         layers = []
-        for l, num_iteration_l in enumerate(num_iteration): #l: l-th layer.   num_iteration_l: the number of iterations of l-th layer
-            for i in range(num_iteration_l):
-                # layers.append(Conv_Dyn(in_channels=in_channels*(l+1), out_channels=out_channels*(l+1), resolution=self.resolutions[l]))
-                layers.append(Conv_Dyn(in_channels=in_channels, out_channels=out_channels, resolution=self.resolutions[l]))
-               
-
-            # setattr(self, 'layer'+str(l), nn.Sequential(*layers))
+        for layer_index, num_iterations_layer in enumerate(num_iterations):
+            for _ in range(num_iterations_layer):
+                layers.append(Conv_Dyn(
+                    in_channels=in_channels, 
+                    out_channels=out_channels,
+                    resolution=self.resolutions[layer_index]
+                ))
             self.conv_layers.append(nn.Sequential(*layers))
 
-            if l < len(num_iteration)-1:
-                # layers= [MgRestriction(in_channels=in_channels*(l+1), out_channels=out_channels*(l+2))] 
-                layers= [MgRestriction(in_channels=in_channels, out_channels=out_channels)] 
-   
+            # Add restriction layer for all but the last layer
+            if layer_index < len(num_iterations) - 1:
+                layers = [MgRestriction(in_channels=in_channels, out_channels=out_channels)]
 
     def forward(self, u, f, a, diva_list=[None for _ in range(7)], r=None):
+   
+        out_list = [0] * len(self.num_iterations)
+        
+        # down pass through each layer
+        for layer_index in range(len(self.num_iterations)):
+            out = (u, f, a, diva_list[layer_index], r)
+            u, f, a, diva, r = self.conv_layers[layer_index](out)
+            out_list[layer_index] = (u, f, a, r)
+            if diva_list[layer_index] is None:
+                diva_list[layer_index] = diva
 
-        # u_list = []
-        out_list = [0] * len(self.num_iteration)
-        # out = (u, f, a) 
-        if diva_list[0] is None:
-            for l in range(len(self.num_iteration)):
-                out = (u, f, a, diva_list[l], r)
-                u, f, a, diva, r = self.conv_layers[l](out) 
-                out_list[l] = (u, f, a, r)
-                diva_list[l] = diva
-        else:
-            for l in range(len(self.num_iteration)):
-                out = (u, f, a, diva_list[l], r)
-                u, f, a, diva, r = self.conv_layers[l](out) 
-                out_list[l] = (u, f, a, r)
-
-        for j in range(len(self.num_iteration)-2,-1,-1):
-            u, f, a, r = out_list[j][0], out_list[j][1], out_list[j][2], out_list[j][3]
-            u_post = u + self.RTlayers[j](out_list[j+1][0])
-            out_list[j] = (u_post, f, a, r)
+        # up pass through transpose layers
+        for layer_index in range(len(self.num_iterations) - 2, -1, -1):
+            u, f, a, r = out_list[layer_index]
+            u_post = u + self.transpose_layers[layer_index](out_list[layer_index + 1][0])
+            out_list[layer_index] = (u_post, f, a, r)
             
         return out_list[0][0], out_list[0][1], out_list[0][2], diva_list
 
 
 
-def benchmark_mg_fem(in_channels, out_channels, input_size, num_iteration, device):
-    model = MG_fem(in_channels, out_channels, num_iteration=num_iteration).to(device)
+
+def benchmark_mg_fem(in_channels, out_channels, input_size, num_iterations, device):
+    model = MG_fem(in_channels, out_channels, num_iterations=num_iterations).to(device)
     input_tensor_u = None
     input_tensor_f = torch.randn((10, in_channels, input_size, input_size), device=device)
     input_tensor_a = None
-    resolutions = [127, 63, 31, 15, 7, 3,]
+    resolutions = [127, 63, 31, 15, 7, 3]
 
-    input_tensor_diva = diva_list=[torch.randn((10, in_channels, resolutions[i], resolutions[i]), device=device) for i in range(len(num_iteration))]
+    input_tensor_diva = [torch.randn((10, in_channels, resolutions[i], resolutions[i]), device=device) for i in range(len(num_iterations))]
 
     # CPU Memory usage
     tracemalloc.start()
 
     # GPU Memory & Time usage
-    torch.cuda.synchronize()
+    if device == 'cuda':
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats(device)
+    
     start_time = time.time()
-    torch.cuda.reset_peak_memory_stats(device)
 
     with torch.no_grad():
         output = model(input_tensor_u, input_tensor_f, input_tensor_a, input_tensor_diva)
 
-    torch.cuda.synchronize()
     end_time = time.time()
 
-    peak_memory_usage = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # In MB
-    cpu_memory_usage = tracemalloc.get_traced_memory()[1] / (1024 ** 2)  # In MB
+    if device == 'cuda':
+        torch.cuda.synchronize()
+        peak_memory_usage = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # In MB
+    else:
+        peak_memory_usage = 0  # No GPU memory usage on CPU
 
+    cpu_memory_usage = tracemalloc.get_traced_memory()[1] / (1024 ** 2)  # In MB
     tracemalloc.stop()
 
     elapsed_time = end_time - start_time
@@ -588,7 +636,7 @@ if __name__ == '__main__':
     # x = torch.randn(2, 2, 64, 64).to(device)
     # y = model(x)
     # print(y.shape)
-    # benchmark_spectralconv2d(32, 32, 60, 60, 128, device)
+    benchmark_spectralconv2d(32, 32, 60, 60, 128, device)
     benchmark_mg_fem(32, 32, 127, [1, 1, 1, 1, 1, 1], device)
 
     
