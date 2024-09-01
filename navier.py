@@ -13,9 +13,10 @@ from functools import partial
 from timeit import default_timer
 import logging
 from Adam import Adam
-from models import MgNO_NS
-
-
+from models import MgNO_NS, MgNO_DC_3
+# from models2 import HANO
+from models3 import HANO
+from get_Unet_new import get_model
 
 
 def train(model, model_type, optimizer, scheduler, trainLossFunc, train_loader, train_l2_step, train_l2_full, dataOpt): #
@@ -219,7 +220,7 @@ def test(model, model_type, trainLossFunc, test_loader, test_l2_full, test_l2_fu
         test_l2_full_2 += loss1.item()
     return test_l2_full, test_l2_full_2, test_l2_step
 
-def objective(modelOpt, dataOpt, model_type='MgNO_NS', model_save=True):
+def objective(modelOpt, dataOpt, model_type='MgNO_DC_3', model_save=True):
     ################################################################
     # configs
     ################################################################
@@ -239,14 +240,16 @@ def objective(modelOpt, dataOpt, model_type='MgNO_NS', model_save=True):
     ################################################################
     # load data
     ################################################################
-
-    train_a, train_u, test_a, test_u = getNavierDataSet3(dataOpt, device, return_normalizer=None, GN=None, normalizer=None)
+    if dataOpt['full_train_2']:
+        train_a, train_u, test_a, test_u = getNavierDataSet3(dataOpt, device, return_normalizer=None, GN=None, normalizer=None)
+    else:
+        train_a, train_u, test_a, test_u = getNavierDataSet2(dataOpt, device, return_normalizer=None, GN=None, normalizer=None)
     train_a = train_a.permute(0, 3, 1, 2).contiguous().to(device)
     train_u = train_u.permute(0, 3, 1, 2).contiguous().to(device)
     test_a = test_a.permute(0, 3, 1, 2).contiguous().to(device)
     test_u = test_u.permute(0, 3, 1, 2).contiguous().to(device)
 
-    train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=dataOpt['batch_size']*10, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=dataOpt['batch_size'], shuffle=True)
     test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=dataOpt['batch_size'], shuffle=False)
 
     ################################################################
@@ -254,10 +257,10 @@ def objective(modelOpt, dataOpt, model_type='MgNO_NS', model_save=True):
     ################################################################
     
 
-    model = MgNO_NS(**modelOpt)
-    model = model.to(device)
+    model = HANO(**modelOpt).to(device)
+    # model = get_model().to(device)
     logging.info(count_params(model))
-    print(model)
+    logging.info(model)
     optimizer = Adam(model.parameters(), lr=dataOpt['learning_rate'], weight_decay=dataOpt['weight_decay'])
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                max_lr=dataOpt['learning_rate'], 
@@ -267,7 +270,7 @@ def objective(modelOpt, dataOpt, model_type='MgNO_NS', model_save=True):
                                steps_per_epoch=1, 
                                epochs=dataOpt['epochs'])
 
-    if dataOpt['loss_type'] == 'L2':
+    if dataOpt['loss_type'] == 'l2':
         trainLossFunc = LpLoss(size_average=False)
     else:
         trainLossFunc = HsLoss(d=2, p=2, k=1, size_average=False, a=[2.,], res=dataOpt['r'], return_freq=False, return_l2=False, truncation=True)
@@ -309,7 +312,7 @@ if __name__ == "__main__":
             "--data", type=str, default="1e-5", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin"
     )
     parser.add_argument(
-            "--model_type", type=str, default="MgNO_NS", help="UNO, FNO, MgNO_NS"
+            "--model_type", type=str, default="MgNO_DC_3", help="UNO, FNO, MgNO_NS"
     )
     parser.add_argument(
             "--epochs", type=int, default=500, help="number of epochs")
@@ -341,6 +344,7 @@ if __name__ == "__main__":
     parser.add_argument('--padding_mode', type=str, default='circular', help='padding mode')
     parser.add_argument('--mlp_hidden_dim', type=int, default=0)
     parser.add_argument('--bias', action='store_true',)
+    parser.add_argument('--use_norm', action='store_true',)
     args = parser.parse_args()
     args = vars(args)
 
@@ -356,13 +360,13 @@ if __name__ == "__main__":
     dataOpt['epochs'] = 500
     dataOpt['T_in'] = 1
     dataOpt['T_out'] = 1
-    dataOpt['T'] = 10
+    dataOpt['T'] = 19
     dataOpt['step'] = 1
     dataOpt['r'] = 64
     dataOpt['sampling'] = 1
     dataOpt['full_train'] = True
     dataOpt['full_train_2'] = True
-    dataOpt['loss_type'] = 'L2'
+    dataOpt['loss_type'] = args['loss_type']
     dataOpt['GN'] = False
     dataOpt['learning_rate'] = args['lr']
     dataOpt['final_div_factor'] = args['final_div_factor']
@@ -382,5 +386,6 @@ if __name__ == "__main__":
     modelOpt['output_dim'] = 1
     modelOpt['padding_mode'] = args['padding_mode']
     modelOpt['bias'] = args['bias']
+    modelOpt['use_norm'] = args['use_norm']
 
     navier.objective(modelOpt, dataOpt, model_type=args['model_type'],)

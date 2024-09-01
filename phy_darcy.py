@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import MgNO_DC, MgNO_DC_smooth, MgNO_NS, MgNO_helm, MgNO_DC_2, MgNO_DC_3, MgNO_DC_4, MgNO_DC_31
+from models import MgNO_DC, MgNO_DC_smooth, MgNO_NS, MgNO_helm, MgNO_DC_2, MgNO_DC_3, MgNO_DC_4, MgNO_DC_5, MgNO_DC_31
 from models3 import HANO, HANO_DC
 # from get_Unet_new import get_model
 import os, logging
@@ -15,10 +15,69 @@ from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
 
 import argparse
-torch.set_printoptions(threshold=100000)
+torch.set_printoptions(threshold=500000)
 
 
+class ConvSlice(nn.Module):
+    def __init__(self, padding_mode='zeros'):
+        super().__init__()
     
+    # initiate the conv2d with the weight of gradx and grady
+        self.avg_a_kernl = 1./3 * torch.tensor([[[[1.,1],[1,0,]]], [[[0.,1],[1,1,]]]],).to('cuda')
+        k00 = .5 * torch.tensor([[[[0.,1],[1, 2,]], [[2.,1],[1,0,]]]],)
+        k01 = .5 * torch.tensor([[[[0.,1],[0, 0,]], [[1.,0],[0,0,]]]],)
+        k_10 = .5 * torch.tensor([[[[0.,0],[1, 0,]], [[1.,0],[0,0,]]]],)
+        k10 = .5 * torch.tensor([[[[0.,0],[0, 1,]], [[0.,1],[0,0,]]]],)
+        k0_1 = .5 * torch.tensor([[[[0.,0],[0, 1,]], [[0.,0],[1,0,]]]],)
+        # concate the kernels to be the shape of [5,1,3,3]
+        kernel = torch.cat([k00, k01, k10, k_10, k0_1], dim=0)
+        # initialize the weight of the conv1 to be kernel
+        self.conv1 = nn.Conv2d(2, 5, kernel_size=2, stride=1, padding=0, padding_mode=padding_mode, bias=False)
+        self.conv1.weight = nn.Parameter(kernel)
+        # set the weight to be untrainable
+        self.conv1.weight.requires_grad = False
+    def forward(self, coef):
+        # Extract the sliding local blocks from the image tensor
+        coef_avg = F.conv2d(coef, self.avg_a_kernl, stride=1, padding=0)
+        result = self.conv1(coef_avg)
+        return result
+
+class PDEloss_2(nn.MSELoss):
+    def __init__(self, reduction='sum', res=256):
+        super().__init__(reduction=reduction)
+        kernel00 = torch.tensor([[[[0.,0,0],[0,1,0],[0,0,0]]]])
+        kernel01 = torch.tensor([[[[0.,-1,0],[0,0,0],[0,0,0]]]])
+        kernel10 = torch.tensor([[[[0.,0,0],[0,0,-1],[0,0,0]]]])
+        kernel0_1 = torch.tensor([[[[0.,0,0],[0,0,0],[0,-1,0]]]])
+        kernel_10 = torch.tensor([[[[0.,0,0],[-1,0,0],[0,0,0]]]])
+        # concate the kernels to be the shape of [5,1,3,3]
+        kernel = torch.cat([kernel00, kernel01, kernel10, kernel_10, kernel0_1, ], dim=0)
+        # initialize the weight of the conv1 to be kernel
+
+        self.register_buffer('kernel', kernel)
+        # register the kernels as a buffer
+  
+        f = torch.ones(res, res).reshape(1, res, res)/ (res**2)
+        self.register_buffer('f', f)
+    
+    def diva_fem(self, u, a):
+        # u is in shape of batch*1*res*res, a is in shape of batch*5*res*res
+        # F.conv2d(u, self.kernel, padding=1) is in shape of batch*5*res*res
+        # return the F.conv2d(u, self.kernel, padding=1) * a and sum over the channel dimension
+  
+        return torch.sum(F.conv2d(u, self.kernel, padding=1) * a, dim=1, keepdim=True)
+    
+    def forward(self, u, a, f=None):
+        if f is None:
+            f = self.f
+        # loss = torch.linalg.norm(self.diva_fem(u, a)-f)
+        # loss = super().forward(self.diva_fem(u, a), f)
+        dudu = self.diva_fem(u, a) * u
+        fu = f * u
+        loss = torch.sum(1/2 * dudu - fu)  
+        return loss 
+
+
 def objective(dataOpt, modelOpt, optimizerScheduler_args,
                 tqdm_disable=True, 
               log_if=False, validate=False, model_type='MgNO', 
@@ -49,23 +108,33 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     # load data and data normalization
     ################################################################
    
-    if dataOpt['data'] in {'darcy', 'darcy20c6', 'darcy15c10', 'darcyF', 'darcy_contin', 'a4f1', }:
-        
-        x_train, y_train, x_normalizer, y_normalizer = getDarcyDataSet(dataOpt, flag='train', return_normalizer=True)
-        x_test, y_test = getDarcyDataSet(dataOpt, flag='test', return_normalizer=False, normalizer=x_normalizer)
-        if validate:
-            x_val, y_val = getDarcyDataSet(dataOpt, flag='val', return_normalizer=False, normalizer=x_normalizer)
-        
-    elif dataOpt['data'] == 'helm':
-        x_train, y_train, x_test, y_test, x_val, y_val, x_normalizer, y_normalizer = getHelmDataset(dataOpt)
-    elif dataOpt['data'] == 'pipe':
-        x_train, y_train, x_test, y_test, x_val, y_val = getPipeDataset(dataOpt)
-    elif dataOpt['data'] == 'ns_merge':
-        x_train, y_train, x_test, y_test, x_normalizer, y_normalizer = getNS_merge_Dataset(dataOpt)
-        y_train = y_train[:, 0, ...]
-        y_test = y_test[:, 0, ...]
-    else: 
-        raise NameError('dataset not exist')
+    data = torch.load('/home/liux0t/neural_MG/pytorch/darcy20c6_fem.pt')
+    y = data['u'].to(device)
+    x = data['a'].unsqueeze(1).to(device)
+    convslice = ConvSlice().to(device)
+
+    x = convslice(x)
+    dataOpt['dataSize'] = {'train': range(1280), 'test': range(1280, 1280+110), 'val':range(1280+110+110)}
+
+    x_train = x[dataOpt['dataSize']['train'],...]
+    y_train = y[dataOpt['dataSize']['train'],...]
+    x_test = x[dataOpt['dataSize']['test'],...]
+    y_test = y[dataOpt['dataSize']['test'],...]
+    x_val = x[dataOpt['dataSize']['val'],...]
+    y_val = y[dataOpt['dataSize']['val'],...]
+    x_train = x_train.detach()
+    y_train = y_train.detach()
+    x_test = x_test.detach()
+    y_test = y_test.detach()
+    x_val = x_val.detach()
+    y_val = y_val.detach()
+
+    y_normalizer = GaussianNormalizer(y_train)
+   
+
+    f = torch.ones(size=(1,1,255,255)).to(device)
+    f = f.to(device)/255**2
+    criterion_2 = PDEloss_2().to(device)
 
     if modelOpt['normalizer']:
         modelOpt['normalizer'] = y_normalizer
@@ -106,40 +175,14 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     # training and evaluation
     ################################################################
     
-    if dataOpt['data'] == 'darcy':
-        model = MgNO_DC_smooth(**modelOpt).to(device)
-    elif dataOpt['data'] == 'pipe':
-        model = MgNO_DC(**modelOpt).to(device)
-    else:
-        if model_type == 'MgNO_helm':
-            model = MgNO_helm(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC':
-            model = MgNO_DC(**modelOpt).to(device)
-        elif model_type == 'HANO_DC':
-            model = HANO_DC(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC_2':
-            model = MgNO_DC_2(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC':
-            model = MgNO_DC(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC_3':
-            model = MgNO_DC_3(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC_31':
-            model = MgNO_DC_31(**modelOpt).to(device)
-        elif model_type == 'MgNO_DC_4':
-            model = MgNO_DC_4(**modelOpt).to(device)
-        elif model_type == 'HANO':
-            model = HANO(**modelOpt).to(device)
-        elif model_type == 'UNet':
-            model = get_model().to(device)
-        else:
-            raise NameError('model not exist')
-    
+    model = MgNO_DC_5(**modelOpt).to(device)
+    # model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy20c62023-12-26 10:29:03.589766.pt')    
     if log_if:    
         logging.info(count_params(model))
         logging.info(model)
     optimizer, scheduler = getOptimizerScheduler(model.parameters(), **optimizerScheduler_args)
     
-    h1loss = HsLoss(d=2, p=2, k=1, a=dataOpt['loss_weight'], size_average=False, res=y_train.size(1),)
+    h1loss = HsLoss(d=2, p=2, k=1, a=dataOpt['loss_weight'], size_average=False, res=y_train.size(2),)
     h1loss.cuda(device)
     if dataOpt['data'] == 'helm':
         h1loss = HSloss_d()
@@ -148,7 +191,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     def train(train_loader):
         model.train()
         train_l2, train_h1 = 0, 0
-        train_f_dist = torch.zeros(y_train.size(1))
+        train_f_dist = torch.zeros(y_train.size(2))
 
         for x, y in train_loader:
             x = x.to(device)
@@ -159,11 +202,14 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
                 with torch.no_grad():
                     train_l2loss = l2loss(out, y)
 
-                train_h1loss, train_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                # train_h1loss, train_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                _, _, f_l2x, f_l2y = h1loss(out, y)
+                train_h1loss = criterion_2(out, x, f)
                 train_h1loss.backward()
             else:
                 with torch.no_grad():
-                    train_h1loss, train_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                    # train_h1loss, train_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                    train_h1loss = criterion_2(out, x, f)
 
                 train_l2loss = l2loss(out, y)
                 train_l2loss.backward()
@@ -185,13 +231,14 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     def test(test_loader):
         model.eval()
         test_l2, test_h1 = 0., 0.
-        test_f_dist = torch.zeros(y_test.size(1))
+        test_f_dist = torch.zeros(y_test.size(2))
         with torch.no_grad():
             for x, y in test_loader:
                 x, y = x.to(device), y.to(device)
                 out = model(x)
                 test_l2 += l2loss(out, y).item()
-                test_h1loss, test_f_l2loss, f_l2x, f_l2y = h1loss(out, y)
+                _, _, f_l2x, f_l2y = h1loss(out, y)
+                test_h1loss = criterion_2(out, x, f)
                 test_h1 += test_h1loss.item()
                 test_f_dist += sum(torch.squeeze(torch.abs(f_l2x-f_l2y))).cpu()
                 
@@ -276,7 +323,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
 
 if __name__ == "__main__":
 
-    import darcy
+    import phy_darcy
     import argparse
 
     parser = argparse.ArgumentParser()
@@ -297,7 +344,7 @@ if __name__ == "__main__":
     parser.add_argument(
             "--weight_decay", type=float, default=1e-4, help="weight decay")
     parser.add_argument(
-            "--loss_type", type=str, default="l2", help="loss type, l2, h1")
+            "--loss_type", type=str, default="h1", help="loss type, l2, h1")
     parser.add_argument(
             "--GN", action='store_true', help="use normalized x")
     parser.add_argument(
@@ -313,15 +360,14 @@ if __name__ == "__main__":
     parser.add_argument(
             "--num_channel_u", type=int, default=24, help="number of channels for u")
     parser.add_argument(
-            "--num_channel_f", type=int, default=1, help="number of channels for f")
+            "--num_channel_f", type=int, default=5, help="number of channels for f")
     parser.add_argument(
             '--num_iteration', type=list, nargs='+', default=[[1,0], [1,0], [1,0], [2,0], [2,0]], help='number of iterations in each layer')
     parser.add_argument(
             '--padding_mode', type=str, default='reflect', help='padding mode')
     parser.add_argument(
             '--last_layer', type=str, default='linear', help='last layer type')
-    parser.add_argument(
-            "--downnorm", action='store_true', help="downnorm")
+
     parser.add_argument(
             "--test", action='store_true', help="load model and test")
     parser.add_argument(
@@ -381,7 +427,7 @@ if __name__ == "__main__":
     optimizerScheduler_args['final_div_factor'] = args['final_div_factor']
     optimizerScheduler_args['div_factor'] = 2
 
-    darcy.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
+    phy_darcy.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
     validate=False, tqdm_disable=True, log_if=True, 
     model_save=True, test_mode=args['test'])
 

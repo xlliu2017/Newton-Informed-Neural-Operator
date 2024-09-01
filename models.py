@@ -552,9 +552,9 @@ class MgNO_DC_6(nn.Module):
             else:
                 self.norm_layer_list.append(nn.Identity())
         if last_layer == 'conv':
-            self.linear = nn.Conv2d(num_channel_u, 1, kernel_size=3, padding=1, padding_mode=padding_mode)
+            self.linear = nn.Conv2d(num_channel_u, 2, kernel_size=3, padding=1, padding_mode=padding_mode)
         elif last_layer == 'linear':
-            self.linear = nn.Conv2d(num_channel_u, 1, kernel_size=1, bias=False)
+            self.linear = nn.Conv2d(num_channel_u, 2, kernel_size=1, bias=False)
         else:
             raise NameError('invalid last_layer')
         self.normalizer = normalizer

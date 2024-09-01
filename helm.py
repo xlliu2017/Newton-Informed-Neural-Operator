@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models import MgNO_helm, MgNO_helm2
+from models3 import HANO_helm, HANO
 import os, logging
 import numpy as np
 import matplotlib.pyplot as plt
@@ -77,9 +78,13 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     ################################################################
     if model_type == 'MgNO_helm':
         model = MgNO_helm(**modelOpt).to(device)
+    elif model_type == 'HANO_helm':
+        model = HANO_helm(**modelOpt).to(device)
+    elif model_type == 'HANO':
+        model = HANO(**modelOpt).to(device)
     else:
         model = MgNO_helm2(**modelOpt).to(device)
-
+    logging.info(model)
 
 
     if log_if:    
@@ -196,7 +201,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
             logging.info(test_h1_rec)
             
  
-            
+     
     if model_save:
         torch.save(model, MODEL_PATH_PARA)
             
@@ -217,7 +222,7 @@ if __name__ == "__main__":
     parser.add_argument(
             "--data", type=str, default="darcy20c6", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin")
     parser.add_argument(
-            "--model_type", type=str, default="MgNO_helm", help="FNO, MgNO")
+            "--model_type", type=str, default="MgNO_helm2", help="FNO, MgNO")
     parser.add_argument(
             "--epochs", type=int, default=500, help="number of epochs")
     parser.add_argument(
@@ -235,7 +240,7 @@ if __name__ == "__main__":
     parser.add_argument(
             "--sample_x", action='store_true', help="sample x")
     parser.add_argument(
-            "--sampling_rate", type=int, default=2, help="sampling rate")
+            "--sampling_rate", type=int, default=1, help="sampling rate")
     parser.add_argument(
             "--normalizer", action='store_true', help="use normalizer")
     parser.add_argument(
@@ -249,7 +254,7 @@ if __name__ == "__main__":
     parser.add_argument(
             '--num_iteration', type=int, nargs='+', default=[[1,0], [1,0], [1,0], [1,0], [2,0]], help='number of iterations in each layer')
     parser.add_argument(
-            '--padding_mode', type=str, default='zeros', help='padding mode')
+            '--padding_mode', type=str, default='reflect', help='padding mode')
   
 
     args = parser.parse_args()
@@ -295,7 +300,7 @@ if __name__ == "__main__":
     modelOpt['normalizer'] = args['normalizer'] 
     modelOpt['output_dim'] = 1
     modelOpt['activation'] = 'gelu'    
- 
+    modelOpt['padding_mode'] = args['padding_mode']
 
     optimizerScheduler_args = {}
     optimizerScheduler_args['optimizer_type'] = 'adam'

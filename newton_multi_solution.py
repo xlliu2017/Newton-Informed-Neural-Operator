@@ -16,7 +16,36 @@ from torch.utils.data import TensorDataset
 import argparse
 torch.set_printoptions(threshold=100000)
 # torch.set_default_tensor_type('torch.DoubleTensor')
-    
+
+class GrayScott_Grad(nn.Module):
+    def __init__(self, DA=2.5e-4, DS=5e-4, mu=0.065, rho=0.04, N=63):
+        super().__init__()
+        self.h = 1.0 / (N - 1)
+        self.DA = DA
+        self.DS = DS
+        self.mu = mu
+        self.rho = rho
+        kernel = torch.tensor([[[[0., -1, 0], [-1, 4, -1], [0, -1, 0]]]]) / self.h**2
+        # self.register_buffer('laplacian_kernel', kernel)
+        self.lap = nn.Conv2d(1, 1, 3, padding=1, bias=False, padding_mode='replicate')
+        self.lap.weight = nn.Parameter(kernel)
+        self.lap.weight.requires_grad = False
+
+    def forward(self, A_S):
+        # Apply Laplacian using convolution
+        A = A_S[:, 0:1, ...]
+        S = A_S[:, 1:2, ...]
+        lap_A = self.lap(A)
+        lap_S = self.lap(S)
+
+        # Compute residuals for A and S
+        F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
+        F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
+        
+        # return the concatenation of the residuals and A_S
+        
+        return torch.cat((F_A, F_S, A_S), dim=1)
+
 class DeepONet(nn.Module):
     def __init__(self, branch_features, trunk_features, output_features, grid_size=63):
         super(DeepONet, self).__init__()
@@ -64,11 +93,13 @@ class DeepONet_POD(nn.Module):
     def __init__(self, branch_features, trunk_features, output_features, grid_size=63, V=None):
         super(DeepONet_POD, self).__init__()
         self.grid_size = grid_size
+        self.grad = GrayScott_Grad()
         self.branch = nn.Sequential(
             # reshape the input to a 2D grid
             # then coarsely downsample the grid of 63x63 to 29x29
             # nn.Unflatten(1, (1, grid_size, grid_size)),
-            nn.Conv2d(2, 128, kernel_size=7, stride=2),
+            self.grad,
+            nn.Conv2d(4, 128, kernel_size=7, stride=2),
             nn.GELU(),
             nn.Conv2d(128, 128, kernel_size=5, stride=2),
             nn.GELU(),
@@ -136,23 +167,48 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     y = deltaAS_list.float().to(device) 
     x = AS_list.to(device).float()
     
-  # take out AS_list a specific pattern as test set
-    x_test = x[:54,...]
-    y_test = y[:54,...]
+  
+    n_samples = x.size(0)
+
+    # Validate that x has more than 1054 samples
+    if n_samples <= 1054:
+        raise ValueError("The tensor x must have more than 1054 samples.")
+
+
+    # Generate indices for the rest of the data, excluding the first 54
+    remaining_indices = torch.arange(54, n_samples)
+
+    # Shuffle the remaining indices and pick the first 1000
+    permuted_indices = torch.randperm(remaining_indices.size(0))[:1000] + 54
+    
+
+    # Combine first 54 and randomly selected 1000 samples to form the test set
+    test_indices = torch.cat((torch.arange(48,54),permuted_indices)) #
+    x_test = x[test_indices]
+    y_test = y[test_indices]
+
+    # Create the training set from the remaining data
+    mask = torch.ones(n_samples, dtype=bool)
+    mask[test_indices] = False
+    x_train = x[mask]
+    y_train = y[mask]
+
+    x_train_l2 = x_train[:10000,...]
+    y_train_l2 = y_train[:10000,...]
     
     # randomly permute x_train
-    perm = torch.randperm(x.size(0)-54)
-    x = x[54:,...][perm]
-    y = y[54:,...][perm]
+    # perm = torch.randperm(x.size(0)-54)
+    # x = x[54:,...][perm]
+    # y = y[54:,...][perm]
 
-    dataOpt['dataSize'] = {'train': range(10000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(10000)}
-    x_train = x[dataOpt['dataSize']['train'],...]
-    y_train = y[dataOpt['dataSize']['train'],...]
-    x_test = torch.concatenate((x_test, x[dataOpt['dataSize']['test'],...]), dim=0)
-    y_test = torch.concatenate((y_test, y[dataOpt['dataSize']['test'],...]), dim=0)
+    # dataOpt['dataSize'] = {'train': range(10000,25000), 'test': range(25000, 28000), 'val':range(600,650), 'train_l2':range(10000)}
+    # x_train = x[dataOpt['dataSize']['train'],...]
+    # y_train = y[dataOpt['dataSize']['train'],...]
+    # x_test = torch.concatenate((x_test, x[dataOpt['dataSize']['test'],...]), dim=0)
+    # y_test = torch.concatenate((y_test, y[dataOpt['dataSize']['test'],...]), dim=0)
     
-    x_train_l2 = x[dataOpt['dataSize']['train_l2'],...]
-    y_train_l2 = y[dataOpt['dataSize']['train_l2'],...]
+    # x_train_l2 = x[dataOpt['dataSize']['train_l2'],...]
+    # y_train_l2 = y[dataOpt['dataSize']['train_l2'],...]
     # x_val = x[dataOpt['dataSize']['val'],...]
     # y_val = y[dataOpt['dataSize']['val'],...]
 
@@ -241,8 +297,8 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         logging.info(count_params(model))
         logging.info(model)
     optimizer, scheduler = getOptimizerScheduler(model.parameters(), **optimizerScheduler_args)
-    optimizer_newton = torch.optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-6)
-    scheduler_newton = torch.optim.lr_scheduler.OneCycleLR(optimizer_newton, max_lr=1e-8,
+    optimizer_newton = torch.optim.Adam(model.parameters(), lr=optimizerScheduler_args['lr']*.1, weight_decay=1e-8)
+    scheduler_newton = torch.optim.lr_scheduler.OneCycleLR(optimizer_newton, max_lr=optimizerScheduler_args['lr']*.1,
                                div_factor=2, 
                                final_div_factor=5e1,
                                pct_start=0.1,
@@ -358,8 +414,8 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
             
             dataOpt['loss_type'] = 'pde'
             lr, train_l2, train_h1 = train(train_loader, optimizer_newton, scheduler_newton)
-            dataOpt['loss_type'] = 'l2'
-            lr, train_l2, train_h1 = train(train_loader_l2, optimizer, scheduler)
+            # dataOpt['loss_type'] = 'l2'
+            # lr, train_l2, train_h1 = train(train_loader_l2, optimizer, scheduler)
             test_l2, test_h1 = test(test_loader)
             if validate:
                 val_l2, val_h1 = test(val_loader)

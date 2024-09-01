@@ -1,4 +1,6 @@
 import torch
+import torch.nn.functional as F
+
 import numpy as np
 import scipy.io
 import h5py
@@ -495,35 +497,76 @@ class HsLoss_2(nn.Module):
         
 
 
+# class PDEloss(nn.MSELoss):
+#     def __init__(self, reduction='sum', res=256):
+#         super().__init__(reduction=reduction)
+#         kernel00 = torch.tensor([[[[0.,0,0],[0,1,0],[0,0,0]]]])
+#         kernel01 = torch.tensor([[[[0.,-1,0],[0,0,0],[0,0,0]]]])
+#         kernel10 = torch.tensor([[[[0.,0,0],[0,0,-1],[0,0,0]]]])
+#         kernel0_1 = torch.tensor([[[[0.,0,0],[0,0,0],[0,-1,0]]]])
+#         kernel_10 = torch.tensor([[[[0.,0,0],[-1,0,0],[0,0,0]]]])
+#         # concate the kernels to be the shape of [5,1,3,3]
+#         kernel = torch.cat([kernel00, kernel01, kernel10, kernel0_1, kernel_10], dim=0)
+#         # initialize the weight of the conv1 to be kernel
+
+#         self.register_buffer('kernel', kernel)
+#         # register the kernels as a buffer
+  
+#         f = torch.tensor.ones(res, res).reshape(1, res, res)/ (res**2)
+#         self.register_buffer('f', f)
+    
+#     def diva_fem(self, u, a):
+#         # u is in shape of batch*1*res*res, a is in shape of batch*5*res*res
+#         # F.conv2d(u, self.kernel, padding=1) is in shape of batch*5*res*res
+#         # return the F.conv2d(u, self.kernel, padding=1) * a and sum over the channel dimension
+  
+#         return torch.sum(F.conv2d(u, self.kernel, padding=1) * a, dim=1, keepdim=False)
+    
+#     def forward(self, u, f, a):
+#         loss = torch.linalg.norm(self.diva_fem(u, a)-f)
+#         # loss = super().forward(self.diva_fem(u, a), f)
+#         return loss 
+
 class PDEloss(nn.MSELoss):
-    def __init__(self, reduction='sum', res=256):
+    def __init__(self, reduction='sum'):
         super().__init__(reduction=reduction)
+        k00 = .5 * torch.tensor([[[[0.,1],[1, 2,]], [[2.,1],[1,0,]]]],)
+        k01 = .5 * torch.tensor([[[[0.,1],[0, 0,]], [[1.,0],[0,0,]]]],)
+        k_10 = .5 * torch.tensor([[[[0.,0],[1, 0,]], [[1.,0],[0,0,]]]],)
+        k10 = .5 * torch.tensor([[[[0.,0],[0, 1,]], [[0.,1],[0,0,]]]],)
+        k0_1 = .5 * torch.tensor([[[[0.,0],[0, 1,]], [[0.,0],[1,0,]]]],)
+        k = torch.cat([k00, k01, k10, k0_1, k_10], dim=0)
+
         kernel00 = torch.tensor([[[[0.,0,0],[0,1,0],[0,0,0]]]])
         kernel01 = torch.tensor([[[[0.,-1,0],[0,0,0],[0,0,0]]]])
         kernel10 = torch.tensor([[[[0.,0,0],[0,0,-1],[0,0,0]]]])
         kernel0_1 = torch.tensor([[[[0.,0,0],[0,0,0],[0,-1,0]]]])
         kernel_10 = torch.tensor([[[[0.,0,0],[-1,0,0],[0,0,0]]]])
-        # concate the kernels to be the shape of [5,1,3,3]
         kernel = torch.cat([kernel00, kernel01, kernel10, kernel0_1, kernel_10], dim=0)
-        # initialize the weight of the conv1 to be kernel
 
-        self.register_buffer('kernel', kernel)
+        avg_a_kernl = 1./3 * torch.tensor([[[[1.,1],[1,0,]]], [[[0.,1],[1,1,]]]],)
+
         # register the kernels as a buffer
-  
-        f = torch.tensor.ones(res, res).reshape(1, res, res)/ (res**2)
-        self.register_buffer('f', f)
+        self.register_buffer('k', k)
+    
+        self.register_buffer('kernel', kernel)
+       
+        self.register_buffer('avg_a_kernl', avg_a_kernl)
+
     
     def diva_fem(self, u, a):
-        # u is in shape of batch*1*res*res, a is in shape of batch*5*res*res
-        # F.conv2d(u, self.kernel, padding=1) is in shape of batch*5*res*res
-        # return the F.conv2d(u, self.kernel, padding=1) * a and sum over the channel dimension
-  
-        return torch.sum(F.conv2d(u, self.kernel, padding=1) * a, dim=1, keepdim=False)
+ 
+        result = torch.sum(F.conv2d(a, self.k, padding=0) * F.conv2d(u, self.kernel, padding=1), dim=1, keepdim=False)
+        return result
+
     
     def forward(self, u, f, a):
+        B = u.size(0)
+        res = (self.diva_fem(u, a)-f).view(B, -1)
+        # loss = torch.sum(torch.linalg.norm(res, dim=1))
         loss = torch.linalg.norm(self.diva_fem(u, a)-f)
         # loss = super().forward(self.diva_fem(u, a), f)
-        return loss 
+        return loss
 
 class PDEloss_2(nn.MSELoss):
 
@@ -560,6 +603,82 @@ class PDEloss_2(nn.MSELoss):
         # f = fixed_rhs + u_flat**2 - A.dot(u_flat)
         # loss = self.h * torch.linalg.norm((self.laplace_minus_u(u_current, du)-f).view(f.size(0), -1), dim=1)
         loss = self.h**2 * super().forward(self.laplace_minus_u(u_current, du).view(f.size(0), -1), f.view(f.size(0), -1))
+        return torch.sqrt(loss)
+
+class PDEloss_single(nn.MSELoss):
+
+    #def create_rhs(N, h, s):
+    """Create the right-hand side of the linear system."""
+    # x = np.linspace(0, 1, N)
+    # y = np.linspace(0, 1, N)
+    # X, Y = np.meshgrid(x, y)
+    # rhs = -s * np.sin(np.pi * X) * np.sin(np.pi * Y)
+    # return rhs.flatten()
+    def __init__(self, reduction='sum', N=63, s=100):
+        super().__init__(reduction=reduction)
+        self.h = 1.0 / (N + 1)
+        kernel = torch.tensor([[[[0.,-1,0],[-1,4,-1],[0,-1,0]]]])/self.h**2
+        self.register_buffer('kernel', kernel)
+        # register the rhs as a buffer
+        
+        x = torch.linspace(0, 1, N)
+        y = torch.linspace(0, 1, N)
+        X, Y = torch.meshgrid(x, y)
+        rhs = -s * torch.sin(np.pi * X) * torch.sin(np.pi * Y)
+        self.register_buffer('rhs', rhs.reshape(N, N))
+    
+    def laplace_plus_u(self, u_current, du):
+        
+        return torch.nn.functional.conv2d(du, self.kernel, padding=1) + 2*du*u_current
+
+    def getGrad(self, u_current):
+
+        return self.rhs - u_current**2 - torch.nn.functional.conv2d(u_current, self.kernel, padding=1)
+
+    def forward(self, u_current, du):
+        f = self.getGrad(u_current)
+        # f = fixed_rhs + u_flat**2 - A.dot(u_flat)
+        # loss = self.h * torch.linalg.norm((self.laplace_minus_u(u_current, du)-f).view(f.size(0), -1), dim=1)
+        loss = self.h**2 * super().forward(self.laplace_plus_u(u_current, du).view(f.size(0), -1), f.view(f.size(0), -1))
+        return torch.sqrt(loss)
+
+class PDEloss_GrayScott(nn.Module):
+    def __init__(self, DA=2.5e-4, DS=5e-4, mu=0.065, rho=0.04, N=63):
+        super().__init__()
+        self.h = 1.0 / (N - 1)
+        self.DA = DA
+        self.DS = DS
+        self.mu = mu
+        self.rho = rho
+        kernel = torch.tensor([[[[0., -1, 0], [-1, 4, -1], [0, -1, 0]]]]) / self.h**2
+        # self.register_buffer('laplacian_kernel', kernel)
+        self.lap = nn.Conv2d(1, 1, 3, padding=1, bias=False, padding_mode='replicate')
+        self.lap.weight = nn.Parameter(kernel)
+        self.lap.weight.requires_grad = False
+
+    def forward(self, A, S, delta_A, delta_S):
+        # Apply Laplacian using convolution
+        lap_A = self.lap(A)
+        lap_S = self.lap(S)
+
+        # Compute residuals for A and S
+        F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
+        F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
+        
+        #F_A = L_A.dot(A_flat) - S_flat * A_flat**2 + (mu + rho) * A_flat
+        # F_S = L_S.dot(S_flat) + S_flat * A_flat**2 - rho * (1 - S_flat)
+        
+        # Apply Laplacian to delta_A and delta_S
+        lap_delta_A = self.lap(delta_A)
+        lap_delta_S = self.lap(delta_S)
+        
+        # Compute J_A_delta_A, J_S_delta_S, J_A_delta_S, and J_S_delta_A
+        J_AA_delta_A = self.DA * lap_delta_A - 2 * delta_A * S * A + (self.mu + self.rho) * delta_A
+        J_SS_delta_S = self.DS * lap_delta_S + (A**2 + self.rho) * delta_S 
+        J_AS_delta_S = - A**2 * delta_S
+        J_SA_delta_A = 2 * S * A * delta_A 
+
+        loss = torch.norm(J_AA_delta_A + J_AS_delta_S + F_A) + torch.norm(J_SA_delta_A + J_SS_delta_S + F_S)
         return loss
 
 def count_params(model):
