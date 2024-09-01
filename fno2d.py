@@ -432,8 +432,13 @@ def benchmark_spectralconv2d(in_channels, out_channels, modes1, modes2, input_si
     start_time = time.time()
 
 
-    with torch.no_grad():
-        output = model(input_tensor)
+    # with torch.no_grad():
+    # for _ in range(10):
+    output = model(input_tensor)
+    
+    output.sum().backward()
+    
+    
 
     if device == 'cuda':
         torch.cuda.synchronize()
@@ -562,9 +567,9 @@ class MG_fem(nn.Module):
 
     def forward(self, u, f, a, diva_list=[None for _ in range(7)], r=None):
    
-        out_list = [0] * len(self.num_iterations)
+        out_list = [None] * len(self.num_iterations)
         
-        # down pass through each layer
+        # Down pass through each layer
         for layer_index in range(len(self.num_iterations)):
             out = (u, f, a, diva_list[layer_index], r)
             u, f, a, diva, r = self.conv_layers[layer_index](out)
@@ -572,7 +577,7 @@ class MG_fem(nn.Module):
             if diva_list[layer_index] is None:
                 diva_list[layer_index] = diva
 
-        # up pass through transpose layers
+        # Up pass through transpose layers
         for layer_index in range(len(self.num_iterations) - 2, -1, -1):
             u, f, a, r = out_list[layer_index]
             u_post = u + self.transpose_layers[layer_index](out_list[layer_index + 1][0])
@@ -602,9 +607,10 @@ def benchmark_mg_fem(in_channels, out_channels, input_size, num_iterations, devi
     
     start_time = time.time()
 
-    with torch.no_grad():
-        output = model(input_tensor_u, input_tensor_f, input_tensor_a, input_tensor_diva)
-
+    # with torch.no_grad():
+    # for _ in range(10):
+    output = model(input_tensor_u, input_tensor_f, input_tensor_a, input_tensor_diva)
+    output[0].sum().backward()
     end_time = time.time()
 
     if device == 'cuda':
@@ -636,7 +642,7 @@ if __name__ == '__main__':
     # x = torch.randn(2, 2, 64, 64).to(device)
     # y = model(x)
     # print(y.shape)
-    benchmark_spectralconv2d(32, 32, 60, 60, 128, device)
-    benchmark_mg_fem(32, 32, 127, [1, 1, 1, 1, 1, 1], device)
+    benchmark_spectralconv2d(64, 64, 60, 60, 128, device)
+    benchmark_mg_fem(64, 64, 127, [1, 1, 1, 1, 1, 1], device)
 
     
