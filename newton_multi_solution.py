@@ -48,6 +48,7 @@ class GrayScott_Grad(nn.Module):
         return F_A, F_S, A_S#torch.cat((F_A, F_S, A_S), dim=1)
 
 class GrayScott_Hess_Delta(nn.Module):
+    # modified from PDEloss_GrayScott in utilities3.py
     def __init__(self, DA=2.5e-4, DS=5e-4, mu=0.065, rho=0.04, N=63):
         super().__init__()
         self.h = 1.0 / (N - 1)
@@ -69,9 +70,6 @@ class GrayScott_Hess_Delta(nn.Module):
         # Compute residuals for A and S
         F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
         F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
-        
-        #F_A = L_A.dot(A_flat) - S_flat * A_flat**2 + (mu + rho) * A_flat
-        # F_S = L_S.dot(S_flat) + S_flat * A_flat**2 - rho * (1 - S_flat)
         
         # Apply Laplacian to delta_A and delta_S
         lap_delta_A = self.lap(delta_A)
@@ -167,33 +165,7 @@ class DeepONet_POD(nn.Module):
         self.hess_delta = GrayScott_Hess_Delta()
         self.encoder = Encoder(branch_features)
         self.encoder2 = Encoder(branch_features)
-        self.branch = self.encoder
-            # reshape the input to a 2D grid
-            # then coarsely downsample the grid of 63x63 to 29x29
-            # nn.Unflatten(1, (1, grid_size, grid_size)),
-            
-            
-            # nn.Conv2d(4, 128, kernel_size=7, stride=2),
-            # nn.GELU(),
-            # nn.Conv2d(128, 128, kernel_size=5, stride=2),
-            # nn.GELU(),
-            # nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            # nn.GELU(),
-            # nn.Conv2d(128, 128, kernel_size=1,),
-            # nn.GELU(),
-            # nn.Conv2d(128, 256, kernel_size=5, stride=2),
-            # nn.GELU(),
-            # nn.Flatten(),
-            # nn.Linear(256 * 5 * 5, 128),
-            # nn.GELU(),
-            # nn.Linear(128, branch_features),
-        
-        # self.branch_2 = nn.Sequential(
-        #     nn.Conv2d(1,128, kernel_size=1),
-        #     nn.GELU(),
-        #     nn.Conv2d(128,1, kernel_size=1)
-        # )
-        
+        self.branch = self.encoder 
         self.register_buffer('trunk', V[:branch_features,...].view(branch_features,-1))
 
     

@@ -665,9 +665,6 @@ class PDEloss_GrayScott(nn.Module):
         F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
         F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
         
-        #F_A = L_A.dot(A_flat) - S_flat * A_flat**2 + (mu + rho) * A_flat
-        # F_S = L_S.dot(S_flat) + S_flat * A_flat**2 - rho * (1 - S_flat)
-        
         # Apply Laplacian to delta_A and delta_S
         lap_delta_A = self.lap(delta_A)
         lap_delta_S = self.lap(delta_S)
