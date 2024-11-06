@@ -629,6 +629,35 @@ def benchmark_mg_fem(in_channels, out_channels, input_size, num_iterations, devi
     print(f"Peak GPU memory usage: {peak_memory_usage:.2f} MB")
     print(f"Peak CPU memory usage: {cpu_memory_usage:.2f} MB\n")
 
+import torch
+import torch.profiler
+
+def benchmark_mg_fem(in_channels, out_channels, input_size, num_iterations, device):
+    model = MG_fem(in_channels, out_channels, num_iterations=num_iterations).to(device)
+    input_tensor_u = None
+    input_tensor_f = torch.randn((10, in_channels, input_size, input_size), device=device)
+    input_tensor_a = None
+    resolutions = [127, 63, 31, 15, 7, 3]
+    input_tensor_diva = [torch.randn((10, in_channels, resolutions[i], resolutions[i]), device=device) for i in range(len(num_iterations))]
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log')
+    ) as prof:
+        with torch.no_grad():
+            output = model(input_tensor_u, input_tensor_f, input_tensor_a, input_tensor_diva)
+        prof.step()
+
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+
+# Example usage
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+benchmark_mg_fem(32, 32, 127, [1, 1, 1, 1, 1, 1], device)
+
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
