@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from models import MgNO_DC_5, MgNO_DC_6
 from fno2d import FNO2d, SpectralDecoder
+from encoder import Encoder
 import os, logging
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,7 +45,76 @@ class GrayScott_Grad(nn.Module):
         
         # return the concatenation of the residuals and A_S
         
-        return torch.cat((F_A, F_S, A_S), dim=1)
+        return F_A, F_S, A_S#torch.cat((F_A, F_S, A_S), dim=1)
+
+class GrayScott_Hess_Delta(nn.Module):
+    def __init__(self, DA=2.5e-4, DS=5e-4, mu=0.065, rho=0.04, N=63):
+        super().__init__()
+        self.h = 1.0 / (N - 1)
+        self.DA = DA
+        self.DS = DS
+        self.mu = mu
+        self.rho = rho
+        kernel = torch.tensor([[[[0., -1, 0], [-1, 4, -1], [0, -1, 0]]]]) / self.h**2
+        # self.register_buffer('laplacian_kernel', kernel)
+        self.lap = nn.Conv2d(1, 1, 3, padding=1, bias=False, padding_mode='replicate')
+        self.lap.weight = nn.Parameter(kernel)
+        self.lap.weight.requires_grad = False
+
+    def forward(self, A, S, delta_A, delta_S):
+        # Apply Laplacian using convolution
+        lap_A = self.lap(A)
+        lap_S = self.lap(S)
+
+        # Compute residuals for A and S
+        F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
+        F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
+        
+        #F_A = L_A.dot(A_flat) - S_flat * A_flat**2 + (mu + rho) * A_flat
+        # F_S = L_S.dot(S_flat) + S_flat * A_flat**2 - rho * (1 - S_flat)
+        
+        # Apply Laplacian to delta_A and delta_S
+        lap_delta_A = self.lap(delta_A)
+        lap_delta_S = self.lap(delta_S)
+        
+        # Compute J_A_delta_A, J_S_delta_S, J_A_delta_S, and J_S_delta_A
+        J_AA_delta_A = self.DA * lap_delta_A - 2 * delta_A * S * A + (self.mu + self.rho) * delta_A
+        J_SS_delta_S = self.DS * lap_delta_S + (A**2 + self.rho) * delta_S 
+        J_AS_delta_S = - A**2 * delta_S
+        J_SA_delta_A = 2 * S * A * delta_A 
+
+        R_A = J_AA_delta_A + J_AS_delta_S + F_A
+        R_S = J_SA_delta_A + J_SS_delta_S + F_S
+        return R_A, R_S
+
+class GrayScott_Grad_2(nn.Module):
+    def __init__(self, DA=2.5e-4, DS=5e-4, mu=0.065, rho=0.04, N=63):
+        super().__init__()
+        self.h = 1.0 / (N - 1)
+        self.DA = DA
+        self.DS = DS
+        self.mu = mu
+        self.rho = rho
+        kernel = torch.tensor([[[[0., -1, 0], [-1, 4, -1], [0, -1, 0]]]]) / self.h**2
+        # self.register_buffer('laplacian_kernel', kernel)
+        self.lap = nn.Conv2d(1, 1, 3, padding=1, bias=False, padding_mode='replicate')
+        self.lap.weight = nn.Parameter(kernel)
+        self.lap.weight.requires_grad = False
+
+    def forward(self, A_S):
+        # Apply Laplacian using convolution
+        A = A_S[:, 0:1, ...]
+        S = A_S[:, 1:2, ...]
+        lap_A = self.lap(A)
+        lap_S = self.lap(S)
+
+        # Compute residuals for A and S
+        F_A = self.DA * lap_A - S * A**2 + (self.mu + self.rho) * A
+        F_S = self.DS * lap_S + S * A**2 - self.rho * (1 - S)
+        
+        # return the concatenation of the residuals and A_S
+        
+        return torch.cat((F_A, F_S), dim=1), A_S
 
 class DeepONet(nn.Module):
     def __init__(self, branch_features, trunk_features, output_features, grid_size=63):
@@ -94,26 +164,30 @@ class DeepONet_POD(nn.Module):
         super(DeepONet_POD, self).__init__()
         self.grid_size = grid_size
         self.grad = GrayScott_Grad()
-        self.branch = nn.Sequential(
+        self.hess_delta = GrayScott_Hess_Delta()
+        self.encoder = Encoder(branch_features)
+        self.encoder2 = Encoder(branch_features)
+        self.branch = self.encoder
             # reshape the input to a 2D grid
             # then coarsely downsample the grid of 63x63 to 29x29
             # nn.Unflatten(1, (1, grid_size, grid_size)),
-            self.grad,
-            nn.Conv2d(4, 128, kernel_size=7, stride=2),
-            nn.GELU(),
-            nn.Conv2d(128, 128, kernel_size=5, stride=2),
-            nn.GELU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(128, 128, kernel_size=1,),
-            nn.GELU(),
-            nn.Conv2d(128, 256, kernel_size=5, stride=2),
-            nn.GELU(),
-            nn.Flatten(),
-            nn.Linear(256 * 5 * 5, 128),
-            nn.GELU(),
-            nn.Linear(128, branch_features),
-        )
+            
+            
+            # nn.Conv2d(4, 128, kernel_size=7, stride=2),
+            # nn.GELU(),
+            # nn.Conv2d(128, 128, kernel_size=5, stride=2),
+            # nn.GELU(),
+            # nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            # nn.GELU(),
+            # nn.Conv2d(128, 128, kernel_size=1,),
+            # nn.GELU(),
+            # nn.Conv2d(128, 256, kernel_size=5, stride=2),
+            # nn.GELU(),
+            # nn.Flatten(),
+            # nn.Linear(256 * 5 * 5, 128),
+            # nn.GELU(),
+            # nn.Linear(128, branch_features),
+        
         # self.branch_2 = nn.Sequential(
         #     nn.Conv2d(1,128, kernel_size=1),
         #     nn.GELU(),
@@ -126,7 +200,35 @@ class DeepONet_POD(nn.Module):
     
     def forward(self, x_branch):
         batch_size = x_branch.shape[0]
-        branch_out = self.branch(x_branch)
+        F_A, F_S, A_S = self.grad(x_branch)
+        branch_out = self.encoder(torch.cat((F_A, F_S, A_S), dim=1))
+        delta = torch.mm(branch_out, self.trunk)
+        delta = delta.view(batch_size, 2, self.grid_size, self.grid_size)
+        R_A, R_S = self.hess_delta(A_S[:, 0:1, ...], A_S[:, 1:2, ...], delta[:, 0:1, ...], delta[:, 1:2, ...])
+        branch_out2 = self.encoder2(torch.cat((R_A, R_S, A_S), dim=1))
+        delta2 = torch.mm(branch_out2, self.trunk)
+        delta2 = delta2.view(batch_size, 2, self.grid_size, self.grid_size)
+        out = delta + delta2
+        return out
+
+class DeepONet_POD_2(nn.Module):
+    def __init__(self, branch_features, grid_size=63, V=None):
+        super(DeepONet_POD_2, self).__init__()
+        self.grid_size = grid_size
+        self.grad = GrayScott_Grad_2()
+        self.branch_1 = Encoder(branch_features)
+        self.branch_2 = Encoder(branch_features, if_linear=True)
+        
+        self.register_buffer('trunk', V[:branch_features,...].view(branch_features,-1))
+
+    
+    
+    def forward(self, x_branch):
+        batch_size = x_branch.shape[0]
+        grad, A_S = self.grad(x_branch)
+        branch_out_1 = self.branch_1(A_S)
+        branch_out_2 = self.branch_2(grad)
+        branch_out = branch_out_1 * branch_out_2
         out = torch.mm(branch_out, self.trunk)
         out = out.view(batch_size, 2, self.grid_size, self.grid_size) #+ self.branch_2(x_branch)
         return out
@@ -298,9 +400,9 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         logging.info(model)
     optimizer, scheduler = getOptimizerScheduler(model.parameters(), **optimizerScheduler_args)
     optimizer_newton = torch.optim.Adam(model.parameters(), lr=optimizerScheduler_args['lr']*.1, weight_decay=1e-8)
-    scheduler_newton = torch.optim.lr_scheduler.OneCycleLR(optimizer_newton, max_lr=optimizerScheduler_args['lr']*.1,
+    scheduler_newton = torch.optim.lr_scheduler.OneCycleLR(optimizer_newton, max_lr=optimizerScheduler_args['lr'],
                                div_factor=2, 
-                               final_div_factor=5e1,
+                               final_div_factor=1e2,
                                pct_start=0.1,
                                steps_per_epoch=1, 
                                epochs=optimizerScheduler_args['epochs'])
@@ -486,7 +588,7 @@ if __name__ == "__main__":
     parser.add_argument(
             "--data", type=str, default="ns_merge", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin")
     parser.add_argument(
-            "--model_type", type=str, default="FNO", help="model type")
+            "--model_type", type=str, default="DeepONet", help="model type, MgNO_DC_5, MgNO_DC_6, FNO, DeepONet")
     parser.add_argument(
             "--epochs", type=int, default=1000, help="number of epochs")
     parser.add_argument(
