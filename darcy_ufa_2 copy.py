@@ -16,39 +16,31 @@ torch.set_printoptions(threshold=500000)
 
 
 class Conv_Dyn(nn.Module):
-    def __init__(self, kernel_size=3, in_channels=1, out_channels=1, stride=1, padding=1, bias=False, padding_mode='zeros', resolution=480):
+    def __init__(self, kernel_size=3, in_channels=1, out_channels=1, stride=1, padding=1, bias=False, padding_mode='replicate', resolution=480):
         super().__init__()
         self.conv_0 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=True, padding_mode=padding_mode)
         self.conv_1 = nn.Conv2d(in_channels, out_channels, kernel_size=2, stride=stride, padding=0, bias=True, padding_mode=padding_mode)
-        # self.conv_2 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias, padding_mode=padding_mode)
-        # self.conv_3 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias, padding_mode=padding_mode)
-        # self.conv_4 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias, padding_mode=padding_mode)
-        # self.ln = nn.LayerNorm([resolution, resolution], elementwise_affine=True)
-   
 
     def forward(self, out):
         u, f, a, diva, r = out
         if diva is None:
-            # diva = self.conv_0(F.tanh((self.conv_1(a))))
             diva = self.conv_1(a)
-        # f = self.conv_3(f) - diva * self.conv_2(u) 
         if u is None:
-            if r is None:
-                r = f
-            u = self.conv_0(F.tanh(diva)) * r
+            r = f if r is None else r 
+            u = self.conv_0(torch.tanh(diva)) * r
         else:
             r = f - diva * u
-            u = u + self.conv_0(F.tanh(diva)) * r                             
+            u = u + self.conv_0(torch.tanh(diva)) * r                             
         out = (u, f, a, diva, r)
         return out
-    
+
 class MgRestriction(nn.Module): 
     def __init__(self, kernel_size=3, in_channels=1, out_channels=1, stride=2, padding=0, bias=False, padding_mode='zeros'):
         super().__init__()
 
-        self.R_1 = nn.Conv2d(in_channels, out_channels, kernel_size=2, stride=stride,  bias=bias,)
-        self.R_2 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, bias=bias,)
-        self.R_3 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, bias=bias,)
+        self.R_1 = nn.Conv2d(in_channels, out_channels, kernel_size=2, stride=stride, padding=0, bias=bias, padding_mode=padding_mode)
+        self.R_2 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias, padding_mode=padding_mode)
+        self.R_3 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias, padding_mode=padding_mode)
 
     def forward(self, out):
         u_old, f_old, a_old, diva, r_old = out
@@ -56,55 +48,59 @@ class MgRestriction(nn.Module):
             a = self.R_1(a_old)  
         else:
             a = a_old                          
-        u = None  
-        r = self.R_3(r_old)                            
-        f = None   
-        out = (u, f, a, diva, r)
+        r = self.R_3(r_old)                               
+        out = (None, None, a, diva, r)
         return out
     
 
-class MG_fem(nn.Module):
-    def __init__(self, in_channels=1, out_channels=1, num_iteration=[1,1,1,1,1]):
+class MG_FEM(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1, num_iterations=[1, 1, 1, 1, 1]):
         super().__init__()
-        self.num_iteration = num_iteration
-        self.resolutions = [127, 63, 31, 15, 7, 4,]
-        self.RTlayers = nn.ModuleList()
-        for j in range(len(num_iteration)-1):
-            self.RTlayers.append(nn.ConvTranspose2d(in_channels=in_channels*(j+2), out_channels=out_channels*(j+1), kernel_size=3, stride=2, padding=0, bias=False))
+        self.num_iterations = num_iterations
+        self.resolutions = [127, 63, 31, 15, 7, 4]
+        
+        self.transpose_layers = nn.ModuleList()
+        for _ in range(len(num_iterations) - 1):
+            self.transpose_layers.append(
+                nn.ConvTranspose2d(
+                    in_channels=in_channels, 
+                    out_channels=out_channels, 
+                    kernel_size=3, 
+                    stride=2, 
+                    padding=0, 
+                    bias=False
+                )
+            )
 
+        self.conv_layers = nn.ModuleList()
         layers = []
-        for l, num_iteration_l in enumerate(num_iteration): #l: l-th layer.   num_iteration_l: the number of iterations of l-th layer
-            for i in range(num_iteration_l):
-                layers.append(Conv_Dyn(in_channels=in_channels*(l+1), out_channels=out_channels*(l+1), resolution=self.resolutions[l]))
-               
+        for layer_index, num_iterations_layer in enumerate(num_iterations):
+            for _ in range(num_iterations_layer):
+                layers.append(Conv_Dyn(
+                    in_channels=in_channels, 
+                    out_channels=out_channels,
+                    resolution=self.resolutions[layer_index]
+                ))
+            self.conv_layers.append(nn.Sequential(*layers))
 
-            setattr(self, 'layer'+str(l), nn.Sequential(*layers))
-
-            if l < len(num_iteration)-1:
-                layers= [MgRestriction(in_channels=in_channels*(l+1), out_channels=out_channels*(l+2))] 
-   
+            if layer_index < len(num_iterations) - 1:
+                layers = [MgRestriction(in_channels=in_channels, out_channels=out_channels)]
 
     def forward(self, u, f, a, diva_list=[None for _ in range(7)], r=None):
+   
+        out_list = [None] * len(self.num_iterations)
+        
+        for layer_index in range(len(self.num_iterations)):
+            out = (u, f, a, diva_list[layer_index], r)
+            u, f, a, diva, r = self.conv_layers[layer_index](out)
+            out_list[layer_index] = (u, f, a, r)
+            if diva_list[layer_index] is None:
+                diva_list[layer_index] = diva
 
-        # u_list = []
-        out_list = [0] * len(self.num_iteration)
-        # out = (u, f, a) 
-        if diva_list[0] is None:
-            for l in range(len(self.num_iteration)):
-                out = (u, f, a, diva_list[l], r)
-                u, f, a, diva, r = getattr(self, 'layer'+str(l))(out) 
-                out_list[l] = (u, f, a, r)
-                diva_list[l] = diva
-        else:
-            for l in range(len(self.num_iteration)):
-                out = (u, f, a, diva_list[l], r)
-                u, f, a, diva, r = getattr(self, 'layer'+str(l))(out) 
-                out_list[l] = (u, f, a, r)
-
-        for j in range(len(self.num_iteration)-2,-1,-1):
-            u, f, a, r = out_list[j][0], out_list[j][1], out_list[j][2], out_list[j][3]
-            u_post = u + self.RTlayers[j](out_list[j+1][0])
-            out_list[j] = (u_post, f, a, r)
+        for layer_index in range(len(self.num_iterations) - 2, -1, -1):
+            u, f, a, r = out_list[layer_index]
+            u_post = u + self.transpose_layers[layer_index](out_list[layer_index + 1][0])
+            out_list[layer_index] = (u_post, f, a, r)
             
         return out_list[0][0], out_list[0][1], out_list[0][2], diva_list
 
@@ -128,8 +124,8 @@ class MgNO(nn.Module):
         self.proj = nn.Conv2d(features, 1, kernel_size=1)
      
         self.mgno = nn.ModuleList()
-        for l in range(4):
-            self.mgno.append(MG_fem(in_channels=features, out_channels=features, num_iteration=[1,1,1,1,1,1,]))
+        for l in range(2):
+            self.mgno.append(MG_FEM(in_channels=features, out_channels=features, num_iteration=[1,1,1,1,1,1,]))
 
     def forward(self, f, a):
         # theta is 100,480,480,2
@@ -142,14 +138,13 @@ class MgNO(nn.Module):
         a = self.lifting_3(a)
  
         u,f,a,diva_list = self.mgno[0](u,f,a,r=r,diva_list=[None for _ in range(6)])# batch,feature,x,y:   100,feature_,960+pad,960+pad
+        u_list = []
         u,f,a,diva_list = self.mgno[1](u,f,a,r=r,diva_list=[None for _ in range(6)])
-        u,f,a,diva_list = self.mgno[2](u,f,a,r=r,diva_list=[None for _ in range(6)])
-        u,f,a,diva_list = self.mgno[3](u,f,a,r=r,diva_list=[None for _ in range(6)])
-        # for _ in range(4):
-        #     u,f,a,diva_list = self.mgno[1](u,f,a,diva_list)  
-    
-        u =self.proj(u)
-        return u
+        # u_list.append(self.proj(u.clone()))
+        for _ in range(5):
+            u,f,a,diva_list = self.mgno[1](u,f,a,diva_list)  
+            u_list.append(self.proj(u.clone()))
+        return u_list
 
 
 def objective(dataOpt, modelOpt, optimizerScheduler_args,
@@ -176,7 +171,6 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         logging.info(f"dataOpt={dataOpt}")
         logging.info(f"modelOpt={modelOpt}")
         logging.info(f"optimizerScheduler_args={optimizerScheduler_args}")
-        logging.info(open(__file__).read())
   
     
     ################################################################
@@ -184,53 +178,30 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
     ################################################################
    
     data = torch.load('/home/liux0t/neural_MG/pytorch/darcy_ufa_4.pt')
-    u = data['u_0'].detach().to(device)
+    u = data['u_0'].detach()
     resolution = u.size(2)
-    f = data['y_train_0'].detach().to(device)
-    a = data['x_train_0'].detach().to(device)
+    f = data['y_train_0'].detach()
+    a = data['x_train_0'].detach()
     avg_a_kernl = 1./3 * torch.tensor([[[[1.,1],[1,0,]]], [[[0.,1],[1,1,]]]],).to(device)
     a = torch.nn.functional.conv2d(a, avg_a_kernl)
 
     train_loader = DataLoader(TensorDataset(u[0:2000], f[0:2000], a[0:2000]), batch_size=10, shuffle=True)
-    test_loader = DataLoader(TensorDataset(u[2000:2200], f[2000:2200], a[2000:2200]), batch_size=10, shuffle=False)
+    test_loader = DataLoader(TensorDataset(u[000:2200], f[000:2200], a[000:2200]), batch_size=10, shuffle=False)
    
     ################################################################
     # training and evaluation
     ################################################################
     
-    model = MgNO(dim_input=4, features=24, ).to(device)
-    # model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-07-16 17:53:48.184673.pt')     #/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-07-16 17:53:48.184673.pt
-    
-    # model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-08-21 19:36:23.556454.pt')
-    # model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-09-02 18:59:03.954651.pt')
-    # model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-09-02 21:30:38.576230.pt')
-    #  set the parameters in self.mgno[1], self.mgno[2] to be trainable and other parameters are fixed
-    #  load the parameters of ('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-09-02 21:30:38.576230.pt')  if it matches the model's parameters' name
-    # Load the state dictionary from the .pt file
-    state_dict = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-09-02 22:01:34.291517.pt').state_dict()
-
-    # Load the parameters into the model
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    print(f"Missing keys: {missing_keys}")
-    print(f"Unexpected keys: {unexpected_keys}")
-
-    for param in model.lifting_2.parameters():
-        param.requires_grad = True
-    for param in model.lifting_3.parameters():
-        param.requires_grad = True
-    for param in model.mgno[0].parameters():
-        param.requires_grad = True
-    for param in model.mgno[1].parameters():
-        param.requires_grad = True
-
+    # model = MgNO(dim_input=4, features=32, ).to(device)
+    model = torch.load('/home/liux0t/FMM/MgNO/model/MgNO_DCdarcy_ufa_42024-07-23 12:19:02.705444.pt')    
     if log_if:    
         logging.info(count_params(model))
         logging.info(model)
     optimizer, scheduler = getOptimizerScheduler(model.parameters(), **optimizerScheduler_args)
     
-    h1loss = HsLoss(d=2, p=2, k=1, a=dataOpt['loss_weight'], size_average=False, res=resolution, return_freq=False, return_l2=False, )
+    h1loss = HsLoss(d=2, p=2, k=1, a=dataOpt['loss_weight'], size_average=False, res=resolution,)
     h1loss.cuda(device)
-    # h1loss = PDEloss().to(device)
+    h1loss = PDEloss().to(device)
 
     l2loss = LpLoss(size_average=False)  
     ############################
@@ -240,21 +211,23 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         train_f_dist = torch.zeros(resolution)
 
         for u, f, a in train_loader:
-           
+            u = u.to(device)
+            f = f.to(device)
+            a = a.to(device)    
             optimizer.zero_grad()
             out = model(f, a)
             if dataOpt['loss_type']=='h1':
                 with torch.no_grad():
                     train_l2loss = l2loss(out, u)
 
-                # train_h1loss = h1loss(out, f, a)
-                train_h1loss = h1loss(out, u)
+                train_h1loss = h1loss(out, f, a)
                 train_h1loss.backward()
             else:
                 with torch.no_grad():
-                    train_h1loss = h1loss(out, f, a)
-
-                train_l2loss = l2loss(out, u)
+                    train_h1loss = h1loss(out[-1], f, a)
+                
+                # train_l2loss = l2loss(out[-1], u)
+                train_l2loss = sum([2.1**i*l2loss(out_, u) for i, out_ in enumerate(out)])
                 train_l2loss.backward()
 
             optimizer.step()
@@ -275,29 +248,53 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
         test_f_dist = torch.zeros(resolution)
         with torch.no_grad():
             for u, f, a in test_loader:
-     
+                u = u.to(device)
+                f = f.to(device)
+                a = a.to(device)
                 out = model(f, a)
-                test_l2 += l2loss(out, u).item()
-                # test_h1loss = h1loss(out, f, a)
-                test_h1loss = h1loss(out, u)
+                test_l2 += l2loss(out[-1], u).item()
+                test_h1loss = h1loss(out[-1], f, a)
                 test_h1 += test_h1loss.item()
                 
-        test_l2/= len(test_loader)*dataOpt['batch_size']
-        test_h1/= len(test_loader)*dataOpt['batch_size']        
+        test_l2/= len(dataOpt['dataSize']['test'])
+        test_h1/= len(dataOpt['dataSize']['test'] )          
 
         return  test_l2, test_h1
+
+    @torch.no_grad()
+    def test_iter(test_loader):
+        model.eval()
+        test_l2_1, test_l2_2, test_l2_3 = 0., 0., 0.
+        test_f_dist = torch.zeros(resolution)
+        with torch.no_grad():
+            for u, f, a in test_loader:
+                u = u.to(device)
+                f = f.to(device)
+                a = a.to(device)
+                out = model(f, a)
+                test_l2_1 += l2loss(out[-1], u).item()
+                test_l2_2 += l2loss(out[-2], u).item()
+                test_l2_3 += l2loss(out[-3], u).item()
+
+        test_l2_1/= len(test_loader)*10
+        test_l2_2/= len(test_loader)*10      
+        test_l2_3/= len(test_loader)*10
+        return  test_l2_1, test_l2_2, test_l2_3
 
         
     ############################  
     ###### start to train ######
     ############################
     
-    train_h1_rec, train_l2_rec, train_f_dist_rec, test_l2_rec, test_h1_rec, test_f_dist_rec = [], [], [], [], [], []
     if test_mode == True:
-        test_l2, test_h1 = test(test_loader)
-        print(f"test l2 loss: {test_l2:.3e}")
+        test_l2_1, test_l2_2, test_l2_3 = test_iter(test_loader)
+        print(f"test l2 loss: {test_l2_1:.3e}, {test_l2_2:.3e}, {test_l2_3:.3e}")
         return 
 
+    train_h1_rec, train_l2_rec, train_f_dist_rec, test_l2_rec, test_h1_rec, test_f_dist_rec = [], [], [], [], [], []
+    if validate:
+        val_l2_rec, val_h1_rec = [], [],
+    
     best_l2, best_test_l2, best_test_h1, arg_min_epoch = 1.0, 1.0, 1.0, 0  
     with tqdm(total=optimizerScheduler_args['epochs'], disable=tqdm_disable) as pbar_ep:
                             
@@ -364,7 +361,7 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
 
 if __name__ == "__main__":
 
-    import darcy_ufa
+    import darcy_ufa_2
     import argparse
 
     parser = argparse.ArgumentParser()
@@ -373,17 +370,17 @@ if __name__ == "__main__":
     parser.add_argument(
             "--model_type", type=str, default="MgNO_DC", help="FNO, MgNO")
     parser.add_argument(
-            "--epochs", type=int, default=1000, help="number of epochs")
+            "--epochs", type=int, default=500, help="number of epochs")
     parser.add_argument(
             "--batch_size", type=int, default=10, help="batch size")
     parser.add_argument(
-            "--optimizer_type", type=str, default="adam", help="optimizer type")
+            "--optimizer_type", type=str, default="adamw", help="optimizer type")
     parser.add_argument(
-            "--lr", type=float, default=1e-4, help="learning rate")
+            "--lr", type=float, default=1e-5, help="learning rate")
     parser.add_argument(
-            "--final_div_factor", type=float, default=100, help="final_div_factor")
+            "--final_div_factor", type=float, default=40, help="final_div_factor")
     parser.add_argument(
-            "--weight_decay", type=float, default=1e-7, help="weight decay")
+            "--weight_decay", type=float, default=1e-4, help="weight decay")
     parser.add_argument(
             "--loss_type", type=str, default="l2", help="loss type, l2, h1")
     parser.add_argument(
@@ -468,8 +465,8 @@ if __name__ == "__main__":
     optimizerScheduler_args['final_div_factor'] = args['final_div_factor']
     optimizerScheduler_args['div_factor'] = 1
 
-    darcy_ufa.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
-    validate=False, tqdm_disable=True, log_if=True, 
+    darcy_ufa_2.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
+    validate=False, tqdm_disable=True, log_if=False, 
     model_save=True, test_mode=args['test'])
 
 
