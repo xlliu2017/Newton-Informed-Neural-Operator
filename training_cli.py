@@ -11,7 +11,7 @@ import ast
 from typing import Any, Callable
 
 
-DEFAULT_NUM_ITERATION = ((1, 0), (1, 0), (1, 0), (1, 1), (2, 0))
+DEFAULT_NUM_ITERATIONS = ("[1, 0]", "[1, 0]", "[1, 0]", "[1, 1]", "[2, 0]")
 SAMPLE_RATE_OVERRIDES = {
     "darcy": 2,
     "darcy20c6": 2,
@@ -86,7 +86,7 @@ def build_training_parser(
         "--num_iteration",
         type=str,
         nargs="+",
-        default=[str(list(values)) for values in DEFAULT_NUM_ITERATION],
+        default=list(DEFAULT_NUM_ITERATIONS),
         help="number of iterations in each layer, e.g. --num_iteration '[1,0]' '[2,1]'",
     )
     parser.add_argument(
