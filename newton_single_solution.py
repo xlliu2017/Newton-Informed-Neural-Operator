@@ -8,12 +8,12 @@ import os, logging
 import numpy as np
 import matplotlib.pyplot as plt
 
+from training_cli import build_training_configs, parse_training_args
 from utilities3 import *
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
 
-import argparse
 torch.set_printoptions(threshold=100000)
 # torch.set_default_tensor_type('torch.DoubleTensor')
     
@@ -422,112 +422,18 @@ def objective(dataOpt, modelOpt, optimizerScheduler_args,
 
 
 if __name__ == "__main__":
+    args = parse_training_args(
+        epochs=1000,
+        batch_size=50,
+        lr=2e-4,
+        loss_type="pde",
+        model_type_help="model type",
+    )
+    dataOpt, modelOpt, optimizerScheduler_args = build_training_configs(
+        args, getDataSize
+    )
 
-    import newton_single_solution
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-            "--data", type=str, default="ns_merge", help="data name, darcy, darcy20c6, darcy15c10, darcyF, darcy_contin")
-    parser.add_argument(
-            "--model_type", type=str, default="DeepONet", help="model type")
-    parser.add_argument(
-            "--epochs", type=int, default=1000, help="number of epochs")
-    parser.add_argument(
-            "--batch_size", type=int, default=50, help="batch size")
-    parser.add_argument(
-            "--optimizer_type", type=str, default="adam", help="optimizer type")
-    parser.add_argument(
-            "--lr", type=float, default=2e-4, help="learning rate")
-    parser.add_argument(
-            "--final_div_factor", type=float, default=10, help="final_div_factor")
-    parser.add_argument(
-            "--weight_decay", type=float, default=1e-4, help="weight decay")
-    parser.add_argument(
-            "--loss_type", type=str, default="pde", help="loss type, l2, h1, pde")
-    parser.add_argument(
-            "--GN", action='store_true', help="use normalized x")
-    parser.add_argument(
-            "--sample_x", action='store_true', help="sample x")
-    parser.add_argument(
-            "--sampling_rate", type=int, default=1, help="sampling rate")
-    parser.add_argument(
-            "--normalizer", action='store_true', help="use normalizer")
-    parser.add_argument(
-            "--normalizer_type", type=str, default="GN", help="PGN, GN")
-    parser.add_argument(
-            "--num_layer", type=int, default=5, help="number of layers")
-    parser.add_argument(
-            "--num_channel_u", type=int, default=24, help="number of channels for u")
-    parser.add_argument(
-            "--num_channel_f", type=int, default=1, help="number of channels for f")
-    parser.add_argument(
-            '--num_iteration', type=list, nargs='+', default=[[1,0], [1,0], [1,0], [1,1], [2,0]], help='number of iterations in each layer')
-    parser.add_argument(
-            '--padding_mode', type=str, default='zeros', help='padding mode')
-    parser.add_argument(
-            '--last_layer', type=str, default='linear', help='last layer type')
-
-    parser.add_argument(
-            "--test", action='store_true', help="load model and test")
-    parser.add_argument(
-            "--MODEL_PATH_LOAD", type=str, default="PATH_LOAD", help="PATH_LOAD")
-    args = parser.parse_args()
-    args = vars(args)
-
-    for i in range(len(args['num_iteration'])):
-        for j in range(len(args['num_iteration'][i])):
-            args['num_iteration'][i][j] = int(args['num_iteration'][i][j])
-        
-
-    if  args['sample_x']:
-        if args['data'] in {'darcy', 'darcy20c6', 'darcy15c10', 'darcyF', 'darcy_contin'}:
-            args['sampling_rate'] = 2
-        elif args['data'] == 'a4f1':
-            args['sampling_rate'] = 4
-        elif args['data'] == 'helm':
-            args['sampling_rate'] = 1
-        elif args['data'] == 'pipe':
-            args['sampling_rate'] = 1
-
-
-    
-  
-        
-    dataOpt = {}
-    dataOpt['data'] = args['data']
-    dataOpt['sampling_rate'] = args['sampling_rate']
-    dataOpt['sample_x'] = args['sample_x']
-    dataOpt['batch_size'] = args['batch_size']
-    dataOpt['loss_type']=args['loss_type']
-    dataOpt['loss_weight'] = [2,]
-    dataOpt['normalizer_type'] = args['normalizer_type']
-    dataOpt['GN'] = args['GN']
-    dataOpt['MODEL_PATH_LOAD'] = args['MODEL_PATH_LOAD']
-    dataOpt = getDataSize(dataOpt)
-
-    modelOpt = {}
-    modelOpt['num_layer'] = args['num_layer']
-    modelOpt['num_channel_u'] = args['num_channel_u']
-    modelOpt['num_channel_f'] = args['num_channel_f']
-    modelOpt['num_classes'] = 1
-    modelOpt['num_iteration'] = args['num_iteration']
-    modelOpt['in_chans'] = 1
-    modelOpt['normalizer'] = args['normalizer'] 
-    modelOpt['output_dim'] = 1
-    modelOpt['activation'] = 'gelu'    
-    modelOpt['padding_mode'] = args['padding_mode']
-    modelOpt['last_layer'] = args['last_layer']
-
-    optimizerScheduler_args = {}
-    optimizerScheduler_args['optimizer_type'] = args['optimizer_type']
-    optimizerScheduler_args['lr'] = args['lr']
-    optimizerScheduler_args['weight_decay'] = args['weight_decay']
-    optimizerScheduler_args['epochs'] = args['epochs']
-    optimizerScheduler_args['final_div_factor'] = args['final_div_factor']
-    optimizerScheduler_args['div_factor'] = 2
-
-    newton_single_solution.objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
+    objective(dataOpt, modelOpt, optimizerScheduler_args, model_type=args['model_type'],
     validate=False, tqdm_disable=True, log_if=True, 
     model_save=True, test_mode=args['test'])
 
